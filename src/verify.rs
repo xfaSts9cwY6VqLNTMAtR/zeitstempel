@@ -42,7 +42,8 @@ pub fn verify_file(file_data: &[u8], ots_data: &[u8]) -> Result<Vec<VerifyResult
         .map_err(|e| format!("Failed to parse .ots file: {}", e))?;
 
     // 2. Hash the input file
-    let computed_digest = operations::hash_file_contents(file_data, ots.hash_op);
+    let computed_digest = operations::hash_file_contents(file_data, ots.hash_op)
+        .map_err(|e| format!("Failed to hash file: {}", e))?;
 
     // 3. Compare digests
     if computed_digest != ots.file_digest {
@@ -55,7 +56,7 @@ pub fn verify_file(file_data: &[u8], ots_data: &[u8]) -> Result<Vec<VerifyResult
 
     // 4. Walk the proof tree, collecting results
     let mut results = Vec::new();
-    walk_timestamp(&ots.timestamp, &ots.file_digest, &mut results);
+    walk_timestamp(&ots.timestamp, &ots.file_digest, &mut results, 0);
 
     Ok(results)
 }
@@ -78,9 +79,18 @@ pub fn parse_only(ots_data: &[u8]) -> Result<OtsFile, String> {
 
 // ── Tree walker ────────────────────────────────────────────────────
 
+const MAX_DEPTH: usize = 256;
+
 /// Recursively walk the timestamp tree, applying operations and
 /// checking attestations.
-fn walk_timestamp(ts: &Timestamp, msg: &[u8], results: &mut Vec<VerifyResult>) {
+fn walk_timestamp(ts: &Timestamp, msg: &[u8], results: &mut Vec<VerifyResult>, depth: usize) {
+    if depth > MAX_DEPTH {
+        results.push(VerifyResult::Error {
+            message: "proof tree exceeds maximum depth".into(),
+        });
+        return;
+    }
+
     // Check attestations at this node
     for att in &ts.attestations {
         results.push(check_attestation(att, msg));
@@ -88,8 +98,16 @@ fn walk_timestamp(ts: &Timestamp, msg: &[u8], results: &mut Vec<VerifyResult>) {
 
     // Follow operation branches
     for (op, child) in &ts.ops {
-        let new_msg = operations::apply(op, msg);
-        walk_timestamp(child, &new_msg, results);
+        let new_msg = match operations::apply(op, msg) {
+            Ok(m) => m,
+            Err(e) => {
+                results.push(VerifyResult::Error {
+                    message: format!("Operation failed: {}", e),
+                });
+                continue;
+            }
+        };
+        walk_timestamp(child, &new_msg, results, depth + 1);
     }
 }
 

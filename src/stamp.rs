@@ -116,7 +116,7 @@ fn submit_to_calendar(server: &str, digest: &[u8]) -> Result<Vec<u8>, StampError
         .timeout(std::time::Duration::from_secs(15))
         .set("Accept", "application/vnd.opentimestamps.v1")
         .set("User-Agent", "zeitstempel")
-        .set("Content-Type", "application/x-www-form-urlencoded")
+        .set("Content-Type", "application/octet-stream")
         .send_bytes(digest)
         .map_err(|e| StampError::Http(format!("{}: {}", url, e)))?;
 

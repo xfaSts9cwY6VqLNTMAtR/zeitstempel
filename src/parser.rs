@@ -283,6 +283,10 @@ fn parse_hash_op(tag: u8) -> Result<HashOp, ParseError> {
     }
 }
 
+/// Maximum recursion depth for timestamp tree parsing.
+/// Real-world .ots files are typically 10-30 levels deep.
+const MAX_DEPTH: usize = 256;
+
 /// Parse a timestamp node recursively.
 ///
 /// A timestamp is a sequence of:
@@ -293,18 +297,26 @@ fn parse_hash_op(tag: u8) -> Result<HashOp, ParseError> {
 /// Forks come first (each `0xFF` means "another branch starts here"),
 /// then the final branch is the implicit continuation (no `0xFF` prefix).
 fn parse_timestamp(p: &mut Parser, msg: &[u8]) -> Result<Timestamp, ParseError> {
+    parse_timestamp_inner(p, msg, 0)
+}
+
+fn parse_timestamp_inner(p: &mut Parser, msg: &[u8], depth: usize) -> Result<Timestamp, ParseError> {
+    if depth > MAX_DEPTH {
+        return Err(ParseError::InvalidData("timestamp tree exceeds maximum depth"));
+    }
+
     let mut attestations = Vec::new();
     let mut ops = Vec::new();
 
     // Consume fork markers — each one spawns a sibling branch
     while p.remaining() > 0 && p.peek()? == TAG_FORK {
         p.read_byte()?; // consume the 0xFF
-        parse_timestamp_branch(p, msg, &mut attestations, &mut ops)?;
+        parse_timestamp_branch(p, msg, &mut attestations, &mut ops, depth)?;
     }
 
     // Parse the final (non-forked) branch
     if p.remaining() > 0 {
-        parse_timestamp_branch(p, msg, &mut attestations, &mut ops)?;
+        parse_timestamp_branch(p, msg, &mut attestations, &mut ops, depth)?;
     }
 
     Ok(Timestamp { attestations, ops })
@@ -316,6 +328,7 @@ fn parse_timestamp_branch(
     msg: &[u8],
     attestations: &mut Vec<Attestation>,
     ops: &mut Vec<(Operation, Timestamp)>,
+    depth: usize,
 ) -> Result<(), ParseError> {
     let tag = p.peek()?;
 
@@ -325,8 +338,15 @@ fn parse_timestamp_branch(
         attestations.push(att);
     } else {
         let op = parse_operation(p)?;
-        let new_msg = crate::operations::apply(&op, msg);
-        let child = parse_timestamp(p, &new_msg)?;
+        let new_msg = crate::operations::apply(&op, msg)
+            .map_err(|e| ParseError::InvalidData(
+                if matches!(e, crate::operations::OpError::UnsupportedOp(_)) {
+                    "unsupported operation: Keccak256"
+                } else {
+                    "operation failed"
+                }
+            ))?;
+        let child = parse_timestamp_inner(p, &new_msg, depth + 1)?;
         ops.push((op, child));
     }
 

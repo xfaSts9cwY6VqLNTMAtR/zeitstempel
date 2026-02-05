@@ -60,17 +60,23 @@ pub fn upgrade(ots: &mut OtsFile) -> UpgradeResult {
 
     // Walk the tree, starting with the file digest as the initial message
     let msg = ots.file_digest.clone();
-    upgrade_timestamp(&mut ots.timestamp, &msg, &mut result);
+    upgrade_timestamp(&mut ots.timestamp, &msg, &mut result, 0);
 
     result
 }
+
+const MAX_DEPTH: usize = 256;
 
 /// Recursively walk the timestamp tree, upgrading pending attestations.
 ///
 /// `msg` tracks the current hash state at this node — operations transform
 /// it as we descend. When we find a Pending attestation, we contact the
 /// calendar server and try to replace it with the completed sub-tree.
-fn upgrade_timestamp(ts: &mut Timestamp, msg: &[u8], result: &mut UpgradeResult) {
+fn upgrade_timestamp(ts: &mut Timestamp, msg: &[u8], result: &mut UpgradeResult, depth: usize) {
+    if depth > MAX_DEPTH {
+        result.errors.push("proof tree exceeds maximum depth".into());
+        return;
+    }
     // Process pending attestations — we may need to remove some and add ops
     let mut new_attestations = Vec::new();
     let mut new_ops = Vec::new();
@@ -111,8 +117,14 @@ fn upgrade_timestamp(ts: &mut Timestamp, msg: &[u8], result: &mut UpgradeResult)
 
     // Recurse into operation children
     for (op, child) in &mut ts.ops {
-        let new_msg = operations::apply(op, msg);
-        upgrade_timestamp(child, &new_msg, result);
+        let new_msg = match operations::apply(op, msg) {
+            Ok(m) => m,
+            Err(e) => {
+                result.errors.push(format!("Operation failed: {}", e));
+                continue;
+            }
+        };
+        upgrade_timestamp(child, &new_msg, result, depth + 1);
     }
 }
 
