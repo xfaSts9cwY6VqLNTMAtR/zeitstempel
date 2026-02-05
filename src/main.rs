@@ -8,48 +8,52 @@ use std::process;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    let subcmd = args.get(1).map(|s| s.as_str());
 
-    match args.len() {
-        // ots-verify --help
-        2 if args[1] == "--help" || args[1] == "-h" => {
-            print_usage();
+    match subcmd {
+        Some("verify") if args.len() == 4 => {
+            run_verify(&args[2], &args[3]);
         }
-        // ots-verify --info <proof.ots>
-        3 if args[1] == "--info" => {
+        Some("info") if args.len() == 3 => {
             run_info(&args[2]);
         }
-        // ots-verify <file> <proof.ots>
-        3 => {
+        Some("--help") | Some("-h") => {
+            print_usage();
+        }
+        Some("--version") | Some("-V") => {
+            println!("zeitstempel {}", env!("CARGO_PKG_VERSION"));
+        }
+        // Legacy: bare two-arg form (zeitstempel file proof.ots)
+        _ if args.len() == 3 && !args[1].starts_with('-') => {
             run_verify(&args[1], &args[2]);
         }
         _ => {
-            eprintln!("Usage: ots-verify <file> <proof.ots>");
-            eprintln!("       ots-verify --info <proof.ots>");
-            eprintln!("       ots-verify --help");
+            print_usage();
             process::exit(1);
         }
     }
 }
 
 fn print_usage() {
-    println!("ots-verify — Standalone OpenTimestamps proof verifier");
+    println!("zeitstempel — Standalone OpenTimestamps CLI");
     println!();
     println!("USAGE:");
-    println!("  ots-verify <file> <proof.ots>    Verify a file against its .ots proof");
-    println!("  ots-verify --info <proof.ots>    Display proof structure (no network)");
-    println!("  ots-verify --help                Show this help");
+    println!("  zeitstempel verify <file> <proof.ots>   Verify a file against its .ots proof");
+    println!("  zeitstempel info <proof.ots>            Display proof structure (no network)");
+    println!("  zeitstempel --help                      Show this help");
+    println!("  zeitstempel --version                   Show version");
     println!();
     println!("EXAMPLES:");
-    println!("  ots-verify document.pdf document.pdf.ots");
-    println!("  ots-verify content-hash.txt proof.ots");
-    println!("  ots-verify --info proof.ots");
+    println!("  zeitstempel verify document.pdf document.pdf.ots");
+    println!("  zeitstempel verify content-hash.txt proof.ots");
+    println!("  zeitstempel info proof.ots");
     println!();
     println!("Verifies .ots proofs by parsing the binary format from scratch,");
     println!("replaying hash operations, and checking against Bitcoin block headers");
     println!("via the Blockstream.info API (with mempool.space fallback).");
 }
 
-/// --info mode: parse and display proof structure without network access.
+/// info subcommand: parse and display proof structure without network access.
 fn run_info(ots_path: &str) {
     let ots_data = read_file_or_exit(ots_path);
 
@@ -66,7 +70,7 @@ fn run_info(ots_path: &str) {
     }
 }
 
-/// Verify mode: hash the input file and check against Bitcoin.
+/// verify subcommand: hash the input file and check against Bitcoin.
 fn run_verify(file_path: &str, ots_path: &str) {
     let file_data = read_file_or_exit(file_path);
     let ots_data = read_file_or_exit(ots_path);

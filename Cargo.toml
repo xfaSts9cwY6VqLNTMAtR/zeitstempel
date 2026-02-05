@@ -1,8 +1,10 @@
 [package]
-name = "ots-verify"
+name = "zeitstempel"
 version = "0.1.0"
 edition = "2024"
-description = "Standalone OpenTimestamps .ots proof verifier — no opentimestamps library, parses binary format by hand"
+description = "Standalone OpenTimestamps CLI — stamp, upgrade, and verify .ots proofs without the opentimestamps library"
+repository = "https://github.com/xfaSts9cwY6VqLNTMAtR/zeitstempel"
+license = "MIT"
 
 [dependencies]
 sha2 = "0.10"           # SHA256 — well-vetted, tiny, no-std capable

@@ -1,6 +1,8 @@
-# ots-verify
+# zeitstempel
 
-Standalone OpenTimestamps `.ots` proof verifier written in Rust. Parses the binary proof format by hand, replays hash operations, and checks results against the Bitcoin blockchain via public APIs. Compiles to a single portable binary.
+Standalone OpenTimestamps CLI written in Rust. Parses the binary `.ots` proof format by hand, replays hash operations, and checks results against the Bitcoin blockchain via public APIs. Compiles to a single portable binary.
+
+*Zeitstempel* is German for "timestamp".
 
 **No `opentimestamps` library** — the binary parser, LEB128 decoder, timestamp tree walker, and operation replay engine are all written from scratch.
 
@@ -8,16 +10,13 @@ Standalone OpenTimestamps `.ots` proof verifier written in Rust. Parses the bina
 
 ```bash
 # Verify a file against its .ots proof
-ots-verify hello-world.txt hello-world.txt.ots
-
-# Verify a content hash file (e.g., KanBanito double-hash pattern)
-ots-verify content-hash.txt proof.ots
+zeitstempel verify hello-world.txt hello-world.txt.ots
 
 # Display proof structure without network access
-ots-verify --info proof.ots
+zeitstempel info proof.ots
 
 # Show help
-ots-verify --help
+zeitstempel --help
 ```
 
 ## Output Examples
@@ -47,7 +46,7 @@ File hash: 03ba204e50d126e4674c005e04d82e84c21366780af1f43bd54a37816b6ab340 (SHA
 
 ```bash
 cargo build --release
-# Binary at: target/release/ots-verify
+# Binary at: target/release/zeitstempel
 ```
 
 ## Test
@@ -67,7 +66,7 @@ Tests include:
 
 ```
 src/
-  main.rs        CLI entry point, arg parsing, output formatting
+  main.rs        CLI entry point, subcommand routing, output formatting
   parser.rs      Binary .ots format parser (magic, LEB128, tree walking)
   operations.rs  Hash/append/prepend operation executors
   verify.rs      Verification logic (replay ops, check against blockchain)
