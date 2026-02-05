@@ -1,10 +1,16 @@
 # zeitstempel
 
-Standalone OpenTimestamps CLI written in Rust. Parses the binary `.ots` proof format by hand, replays hash operations, and checks results against the Bitcoin blockchain via public APIs. Compiles to a single portable binary.
+A command-line tool that proves when a file existed by anchoring it to the Bitcoin blockchain, using the [OpenTimestamps](https://opentimestamps.org/) protocol. You can create timestamps, upgrade them once Bitcoin confirms them, and verify them later — all from a single binary.
 
 *Zeitstempel* is German for "timestamp".
 
-**No `opentimestamps` library** — the binary parser, LEB128 decoder, timestamp tree walker, and operation replay engine are all written from scratch.
+## About
+
+[OpenTimestamps](https://opentimestamps.org/) lets you prove that a file existed at a certain point in time, without trusting any single party. It works by hashing your file and embedding that hash in a Bitcoin transaction. Because Bitcoin blocks are irreversible and publicly auditable, this creates a tamper-proof record of when the file existed.
+
+zeitstempel handles the full lifecycle: stamping (submitting your file's hash to calendar servers), upgrading (fetching the completed Bitcoin proof once the blockchain confirms it), and verifying (replaying the proof chain and checking it against a real Bitcoin block header).
+
+Written in Rust, compiles to a single portable binary. The binary `.ots` format parser, serializer, tree walker, and operation replay engine are all written from scratch — no `opentimestamps` library dependency.
 
 ## Usage
 
@@ -120,7 +126,7 @@ src/
 - Upgrade pending proofs to Bitcoin-anchored (with `--wait` polling mode)
 - Bitcoin attestation verification
 - Pending calendar attestation reporting
-- Litecoin/Ethereum attestation detection (reported, not verified)
+- Litecoin/Ethereum proofs are recognized and displayed, but not verified (no API client for those chains)
 - SHA256, SHA1, RIPEMD160 hash operations
 - Append, prepend, reverse, hexlify operations
 - Proof tree forks (multiple attestation paths)
