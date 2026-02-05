@@ -12,3 +12,4 @@ sha1 = "0.10"           # SHA1 support (same RustCrypto family)
 ripemd = "0.1"          # RIPEMD160 support
 ureq = "2"              # Minimal blocking HTTP client (~200KB)
 serde_json = "1"        # Parse Bitcoin API JSON responses
+getrandom = "0.2"       # Cross-platform cryptographic RNG (transitive dep via ureq→ring)

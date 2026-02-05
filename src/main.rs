@@ -2,6 +2,8 @@ mod parser;
 mod operations;
 mod verify;
 mod bitcoin;
+mod writer;
+mod stamp;
 
 use std::fs;
 use std::process;
@@ -11,6 +13,9 @@ fn main() {
     let subcmd = args.get(1).map(|s| s.as_str());
 
     match subcmd {
+        Some("stamp") if args.len() == 3 => {
+            run_stamp(&args[2]);
+        }
         Some("verify") if args.len() == 4 => {
             run_verify(&args[2], &args[3]);
         }
@@ -38,19 +43,21 @@ fn print_usage() {
     println!("zeitstempel — Standalone OpenTimestamps CLI");
     println!();
     println!("USAGE:");
+    println!("  zeitstempel stamp <file>                Create an .ots timestamp proof");
     println!("  zeitstempel verify <file> <proof.ots>   Verify a file against its .ots proof");
     println!("  zeitstempel info <proof.ots>            Display proof structure (no network)");
     println!("  zeitstempel --help                      Show this help");
     println!("  zeitstempel --version                   Show version");
     println!();
     println!("EXAMPLES:");
+    println!("  zeitstempel stamp document.pdf");
     println!("  zeitstempel verify document.pdf document.pdf.ots");
     println!("  zeitstempel verify content-hash.txt proof.ots");
     println!("  zeitstempel info proof.ots");
     println!();
-    println!("Verifies .ots proofs by parsing the binary format from scratch,");
-    println!("replaying hash operations, and checking against Bitcoin block headers");
-    println!("via the Blockstream.info API (with mempool.space fallback).");
+    println!("Creates and verifies .ots proofs by parsing the binary format from");
+    println!("scratch, replaying hash operations, and checking against Bitcoin block");
+    println!("headers via the Blockstream.info API (with mempool.space fallback).");
 }
 
 /// info subcommand: parse and display proof structure without network access.
@@ -62,6 +69,37 @@ fn run_info(ots_path: &str) {
             println!("Proof structure for: {}", ots_path);
             println!();
             parser::print_info(&ots);
+        }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            process::exit(1);
+        }
+    }
+}
+
+/// stamp subcommand: create an .ots proof by submitting to calendar servers.
+fn run_stamp(file_path: &str) {
+    let file_data = read_file_or_exit(file_path);
+    let ots_path = format!("{}.ots", file_path);
+
+    // Check if .ots already exists
+    if std::path::Path::new(&ots_path).exists() {
+        eprintln!("Error: '{}' already exists. Remove it first to re-stamp.", ots_path);
+        process::exit(1);
+    }
+
+    println!("Submitting to calendar servers...");
+
+    match stamp::stamp_file(&file_data) {
+        Ok(ots_bytes) => {
+            fs::write(&ots_path, &ots_bytes).unwrap_or_else(|e| {
+                eprintln!("Error writing '{}': {}", ots_path, e);
+                process::exit(1);
+            });
+            println!("Timestamp proof created: {}", ots_path);
+            println!();
+            println!("The proof is pending — it will be anchored to Bitcoin within");
+            println!("a few hours. Use `zeitstempel info {}` to inspect it.", ots_path);
         }
         Err(e) => {
             eprintln!("Error: {}", e);

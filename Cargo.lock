@@ -687,6 +687,7 @@ dependencies = [
 name = "zeitstempel"
 version = "0.1.0"
 dependencies = [
+ "getrandom",
  "ripemd",
  "serde_json",
  "sha1",

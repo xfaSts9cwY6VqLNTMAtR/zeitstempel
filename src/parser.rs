@@ -11,27 +11,27 @@ use std::fmt;
 
 // ── Magic header (31 bytes) ────────────────────────────────────────
 /// Every .ots file starts with these exact 31 bytes.
-const HEADER_MAGIC: &[u8] = b"\x00OpenTimestamps\x00\x00Proof\x00\xbf\x89\xe2\xe8\x84\xe8\x92\x94";
+pub const HEADER_MAGIC: &[u8] = b"\x00OpenTimestamps\x00\x00Proof\x00\xbf\x89\xe2\xe8\x84\xe8\x92\x94";
 
 // ── Tag bytes for operations ───────────────────────────────────────
-const TAG_APPEND:    u8 = 0xf0;
-const TAG_PREPEND:   u8 = 0xf1;
-const TAG_REVERSE:   u8 = 0xf2;
-const TAG_HEXLIFY:   u8 = 0xf3;
-const TAG_SHA1:      u8 = 0x02;
-const TAG_RIPEMD160: u8 = 0x03;
-const TAG_SHA256:    u8 = 0x08;
-const TAG_KECCAK256: u8 = 0x67;
+pub const TAG_APPEND:    u8 = 0xf0;
+pub const TAG_PREPEND:   u8 = 0xf1;
+pub const TAG_REVERSE:   u8 = 0xf2;
+pub const TAG_HEXLIFY:   u8 = 0xf3;
+pub const TAG_SHA1:      u8 = 0x02;
+pub const TAG_RIPEMD160: u8 = 0x03;
+pub const TAG_SHA256:    u8 = 0x08;
+pub const TAG_KECCAK256: u8 = 0x67;
 
 // ── Special markers ────────────────────────────────────────────────
-const TAG_ATTESTATION: u8 = 0x00;
-const TAG_FORK:        u8 = 0xff;
+pub const TAG_ATTESTATION: u8 = 0x00;
+pub const TAG_FORK:        u8 = 0xff;
 
 // ── Attestation type tags (8 bytes each) ───────────────────────────
-const ATT_TAG_BITCOIN:  [u8; 8] = [0x05, 0x88, 0x96, 0x0d, 0x73, 0xd7, 0x19, 0x01];
-const ATT_TAG_LITECOIN: [u8; 8] = [0x06, 0x86, 0x9a, 0x0d, 0x73, 0xd7, 0x1b, 0x45];
-const ATT_TAG_ETHEREUM: [u8; 8] = [0x30, 0xfe, 0x80, 0x87, 0xb5, 0xc7, 0xea, 0xd7];
-const ATT_TAG_PENDING:  [u8; 8] = [0x83, 0xdf, 0xe3, 0x0d, 0x2e, 0xf9, 0x0c, 0x8e];
+pub const ATT_TAG_BITCOIN:  [u8; 8] = [0x05, 0x88, 0x96, 0x0d, 0x73, 0xd7, 0x19, 0x01];
+pub const ATT_TAG_LITECOIN: [u8; 8] = [0x06, 0x86, 0x9a, 0x0d, 0x73, 0xd7, 0x1b, 0x45];
+pub const ATT_TAG_ETHEREUM: [u8; 8] = [0x30, 0xfe, 0x80, 0x87, 0xb5, 0xc7, 0xea, 0xd7];
+pub const ATT_TAG_PENDING:  [u8; 8] = [0x83, 0xdf, 0xe3, 0x0d, 0x2e, 0xf9, 0x0c, 0x8e];
 
 // ── Data structures ────────────────────────────────────────────────
 
@@ -421,6 +421,32 @@ pub fn count_attestations(ts: &Timestamp) -> usize {
         count += count_attestations(child);
     }
     count
+}
+
+// ── Test support — exposes parser internals for roundtrip tests ───
+
+#[cfg(test)]
+pub mod tests_support {
+    use super::*;
+
+    /// A wrapper around the internal Parser for use in writer roundtrip tests.
+    pub struct TestParser<'a> {
+        inner: Parser<'a>,
+    }
+
+    impl<'a> TestParser<'a> {
+        pub fn read_varuint(&mut self) -> Result<u64, ParseError> {
+            self.inner.read_varuint()
+        }
+
+        pub fn read_varbytes(&mut self) -> Result<Vec<u8>, ParseError> {
+            self.inner.read_varbytes()
+        }
+    }
+
+    pub fn make_parser(data: &[u8]) -> TestParser<'_> {
+        TestParser { inner: Parser::new(data) }
+    }
 }
 
 // ── Unit tests ─────────────────────────────────────────────────────
