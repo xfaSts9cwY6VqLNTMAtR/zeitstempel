@@ -1,0 +1,12 @@
+[package]
+name = "ots-verify"
+version = "0.1.0"
+edition = "2024"
+description = "Standalone OpenTimestamps .ots proof verifier — no opentimestamps library, parses binary format by hand"
+
+[dependencies]
+sha2 = "0.10"           # SHA256 — well-vetted, tiny, no-std capable
+sha1 = "0.10"           # SHA1 support (same RustCrypto family)
+ripemd = "0.1"          # RIPEMD160 support
+ureq = "2"              # Minimal blocking HTTP client (~200KB)
+serde_json = "1"        # Parse Bitcoin API JSON responses
