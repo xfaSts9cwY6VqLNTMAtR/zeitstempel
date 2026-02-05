@@ -4,6 +4,7 @@ mod verify;
 mod bitcoin;
 mod writer;
 mod stamp;
+mod upgrade;
 
 use std::fs;
 use std::process;
@@ -15,6 +16,12 @@ fn main() {
     match subcmd {
         Some("stamp") if args.len() == 3 => {
             run_stamp(&args[2]);
+        }
+        Some("upgrade") if args.len() == 3 => {
+            run_upgrade(&args[2], false);
+        }
+        Some("upgrade") if args.len() == 4 && args[2] == "--wait" => {
+            run_upgrade(&args[3], true);
         }
         Some("verify") if args.len() == 4 => {
             run_verify(&args[2], &args[3]);
@@ -44,6 +51,8 @@ fn print_usage() {
     println!();
     println!("USAGE:");
     println!("  zeitstempel stamp <file>                Create an .ots timestamp proof");
+    println!("  zeitstempel upgrade <proof.ots>         Upgrade pending proof to Bitcoin-anchored");
+    println!("  zeitstempel upgrade --wait <proof.ots>  Wait until upgrade completes");
     println!("  zeitstempel verify <file> <proof.ots>   Verify a file against its .ots proof");
     println!("  zeitstempel info <proof.ots>            Display proof structure (no network)");
     println!("  zeitstempel --help                      Show this help");
@@ -51,6 +60,7 @@ fn print_usage() {
     println!();
     println!("EXAMPLES:");
     println!("  zeitstempel stamp document.pdf");
+    println!("  zeitstempel upgrade document.pdf.ots");
     println!("  zeitstempel verify document.pdf document.pdf.ots");
     println!("  zeitstempel verify content-hash.txt proof.ots");
     println!("  zeitstempel info proof.ots");
@@ -99,8 +109,20 @@ fn run_stamp(file_path: &str) {
             println!("Timestamp proof created: {}", ots_path);
             println!();
             println!("The proof is pending — it will be anchored to Bitcoin within");
-            println!("a few hours. Use `zeitstempel info {}` to inspect it.", ots_path);
+            println!("a few hours. Run `zeitstempel upgrade {}` to complete it,", ots_path);
+            println!("or use `zeitstempel info {}` to inspect it.", ots_path);
         }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            process::exit(1);
+        }
+    }
+}
+
+/// upgrade subcommand: replace pending attestations with completed Bitcoin proofs.
+fn run_upgrade(ots_path: &str, wait: bool) {
+    match upgrade::run_upgrade(ots_path, wait) {
+        Ok(_) => {}
         Err(e) => {
             eprintln!("Error: {}", e);
             process::exit(1);

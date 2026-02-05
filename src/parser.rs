@@ -423,6 +423,16 @@ pub fn count_attestations(ts: &Timestamp) -> usize {
     count
 }
 
+/// Parse a timestamp sub-tree from raw bytes (e.g. a calendar server response).
+///
+/// `msg` is the current hash state at this point in the proof chain —
+/// it's needed because operations in the tree compute new messages as
+/// they go.
+pub fn parse_timestamp_from_bytes(data: &[u8], msg: &[u8]) -> Result<Timestamp, ParseError> {
+    let mut p = Parser::new(data);
+    parse_timestamp(&mut p, msg)
+}
+
 // ── Test support — exposes parser internals for roundtrip tests ───
 
 #[cfg(test)]

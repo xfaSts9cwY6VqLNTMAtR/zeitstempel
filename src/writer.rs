@@ -3,7 +3,7 @@
 /// Builds .ots proof files by writing the header, varuint-encoded
 /// lengths, operation tags, and raw byte payloads into a Vec<u8>.
 
-use crate::parser::{self, HashOp};
+use crate::parser::{self, Attestation, HashOp, Operation, OtsFile, Timestamp};
 
 /// Write the 31-byte OTS magic header.
 pub fn write_header(buf: &mut Vec<u8>) {
@@ -39,6 +39,104 @@ pub fn write_hash_op(buf: &mut Vec<u8>, op: HashOp) {
         HashOp::Ripemd160 => parser::TAG_RIPEMD160,
         HashOp::Keccak256 => parser::TAG_KECCAK256,
     });
+}
+
+/// Serialize a complete OtsFile back to its binary .ots format.
+pub fn write_ots(ots: &OtsFile) -> Vec<u8> {
+    let mut buf = Vec::new();
+
+    // Header + version 1
+    write_header(&mut buf);
+    write_varuint(&mut buf, 1);
+
+    // Hash op + file digest
+    write_hash_op(&mut buf, ots.hash_op);
+    buf.extend_from_slice(&ots.file_digest);
+
+    // Timestamp tree
+    write_timestamp(&mut buf, &ots.timestamp);
+
+    buf
+}
+
+/// Serialize a timestamp tree node.
+///
+/// Fork markers (`0xFF`) precede all branches except the last one.
+/// Attestations are leaves; operations chain into child timestamps.
+pub fn write_timestamp(buf: &mut Vec<u8>, ts: &Timestamp) {
+    let total_branches = ts.attestations.len() + ts.ops.len();
+    let mut branch_idx = 0;
+
+    for att in &ts.attestations {
+        if branch_idx < total_branches - 1 {
+            buf.push(parser::TAG_FORK);
+        }
+        write_attestation(buf, att);
+        branch_idx += 1;
+    }
+
+    for (op, child) in &ts.ops {
+        if branch_idx < total_branches - 1 {
+            buf.push(parser::TAG_FORK);
+        }
+        write_operation(buf, op);
+        write_timestamp(buf, child);
+        branch_idx += 1;
+    }
+}
+
+/// Serialize a single operation.
+pub fn write_operation(buf: &mut Vec<u8>, op: &Operation) {
+    match op {
+        Operation::Append(data) => {
+            buf.push(parser::TAG_APPEND);
+            write_varbytes(buf, data);
+        }
+        Operation::Prepend(data) => {
+            buf.push(parser::TAG_PREPEND);
+            write_varbytes(buf, data);
+        }
+        Operation::Sha256    => buf.push(parser::TAG_SHA256),
+        Operation::Sha1      => buf.push(parser::TAG_SHA1),
+        Operation::Ripemd160 => buf.push(parser::TAG_RIPEMD160),
+        Operation::Keccak256 => buf.push(parser::TAG_KECCAK256),
+        Operation::Reverse   => buf.push(parser::TAG_REVERSE),
+        Operation::Hexlify   => buf.push(parser::TAG_HEXLIFY),
+    }
+}
+
+/// Serialize an attestation: `0x00` marker + 8-byte type tag + varbytes payload.
+pub fn write_attestation(buf: &mut Vec<u8>, att: &Attestation) {
+    buf.push(parser::TAG_ATTESTATION);
+
+    match att {
+        Attestation::Bitcoin { height } => {
+            buf.extend_from_slice(&parser::ATT_TAG_BITCOIN);
+            let mut payload = Vec::new();
+            write_varuint(&mut payload, *height);
+            write_varbytes(buf, &payload);
+        }
+        Attestation::Litecoin { height } => {
+            buf.extend_from_slice(&parser::ATT_TAG_LITECOIN);
+            let mut payload = Vec::new();
+            write_varuint(&mut payload, *height);
+            write_varbytes(buf, &payload);
+        }
+        Attestation::Ethereum { height } => {
+            buf.extend_from_slice(&parser::ATT_TAG_ETHEREUM);
+            let mut payload = Vec::new();
+            write_varuint(&mut payload, *height);
+            write_varbytes(buf, &payload);
+        }
+        Attestation::Pending { uri } => {
+            buf.extend_from_slice(&parser::ATT_TAG_PENDING);
+            write_varbytes(buf, uri.as_bytes());
+        }
+        Attestation::Unknown { tag, payload } => {
+            buf.extend_from_slice(tag);
+            write_varbytes(buf, payload);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -133,5 +231,24 @@ mod tests {
         buf.clear();
         write_hash_op(&mut buf, HashOp::Ripemd160);
         assert_eq!(buf, vec![0x03]);
+    }
+
+    #[test]
+    fn test_write_ots_roundtrip_hello_world() {
+        // Parse the fixture, serialize it back, parse again — should match
+        let original = std::fs::read("tests/fixtures/hello-world.txt.ots")
+            .expect("fixture file missing");
+        let ots = parser::parse_ots(&original).expect("failed to parse");
+
+        let serialized = write_ots(&ots);
+        let reparsed = parser::parse_ots(&serialized).expect("failed to re-parse");
+
+        // Same hash op, digest, and attestation count
+        assert_eq!(ots.hash_op, reparsed.hash_op);
+        assert_eq!(ots.file_digest, reparsed.file_digest);
+        assert_eq!(
+            parser::count_attestations(&ots.timestamp),
+            parser::count_attestations(&reparsed.timestamp),
+        );
     }
 }
