@@ -59,17 +59,18 @@ This typically takes a few hours (1-3 Bitcoin blocks).
 Try again later, or use `--wait` to let zeitstempel poll until complete.
 ```
 
-Proof info:
+Proof info (ASCII art tree):
 ```
 File hash: 03ba204e50d126e4674c005e04d82e84c21366780af1f43bd54a37816b6ab340 (SHA256)
-
--> RIPEMD160
-  -> prepend(0100000001e482f9d3...)
-    -> append(88ac00000000)
-      -> SHA256
-        -> SHA256
-          ...
-            Bitcoin block #358391
+│
+└── RIPEMD160
+    └── prepend(0100000001e482f9d3...)
+        └── append(88ac00000000)
+            └── SHA256
+                └── SHA256
+                    └── prepend(a987f716...)
+                        └── ...
+                            └── Bitcoin block #358391
 ```
 
 ## Build
