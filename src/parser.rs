@@ -414,23 +414,46 @@ pub fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
-/// Pretty-print the proof structure (for --info mode).
+/// Pretty-print the proof structure as an ASCII art tree (for `info` mode).
+///
+/// Draws the Merkle path from the file hash up to the Bitcoin block
+/// using box-drawing characters, making forks and depth visible at a
+/// glance.
 pub fn print_info(ots: &OtsFile) {
     println!("File hash: {} ({})", hex(&ots.file_digest), ots.hash_op);
-    println!();
-    print_timestamp(&ots.timestamp, 0);
+    println!("\u{2502}");                          // │
+    print_timestamp_tree(&ots.timestamp, "");
 }
 
-fn print_timestamp(ts: &Timestamp, depth: usize) {
-    let indent = "  ".repeat(depth);
+/// Recursively draw a timestamp node's children as a tree.
+///
+/// `prefix` is the string printed before the connector on each line —
+/// it carries the vertical bars (`│`) from ancestor levels that still
+/// have siblings below.  The classic algorithm: for each child, decide
+/// whether it's the last sibling (use `└── `) or not (use `├── `), then
+/// extend the prefix accordingly before recursing.
+fn print_timestamp_tree(ts: &Timestamp, prefix: &str) {
+    // All children of this node: attestations (leaves) first, then ops (branches).
+    let total = ts.attestations.len() + ts.ops.len();
+    let mut index = 0;
 
     for att in &ts.attestations {
-        println!("{}{}", indent, att);
+        let is_last = index == total - 1;
+        let connector = if is_last { "\u{2514}\u{2500}\u{2500} " }   // └──
+                        else       { "\u{251C}\u{2500}\u{2500} " };   // ├──
+        println!("{}{}{}", prefix, connector, att);
+        index += 1;
     }
 
     for (op, child) in &ts.ops {
-        println!("{}-> {}", indent, op);
-        print_timestamp(child, depth + 1);
+        let is_last = index == total - 1;
+        let connector  = if is_last { "\u{2514}\u{2500}\u{2500} " }  // └──
+                         else       { "\u{251C}\u{2500}\u{2500} " };  // ├──
+        let extension  = if is_last { "    " }                        // (space)
+                         else       { "\u{2502}   " };                // │
+        println!("{}{}{}", prefix, connector, op);
+        print_timestamp_tree(child, &format!("{}{}", prefix, extension));
+        index += 1;
     }
 }
 
