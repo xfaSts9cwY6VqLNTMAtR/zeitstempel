@@ -98,7 +98,7 @@ Tests include:
 ```
 src/
   main.rs        CLI entry point, subcommand routing, output formatting
-  parser.rs      Binary .ots format parser (magic, LEB128, tree walking)
+  parser.rs      Binary .ots format parser (magic, LEB128, tree walking, ASCII art)
   writer.rs      Binary .ots format serializer (inverse of parser)
   operations.rs  Hash/append/prepend operation executors
   stamp.rs       Stamp logic (hash file, submit to calendar servers)
@@ -110,7 +110,7 @@ src/
 ### What we wrote from scratch (the educational core)
 - Binary .ots format parser and serializer
 - LEB128 varuint encoder/decoder
-- Timestamp tree walker (for verify, upgrade, and info)
+- Timestamp tree walker (for verify, upgrade, and info) with ASCII art rendering
 - Attestation parser (Bitcoin, Litecoin, Ethereum, Pending)
 - Operation replay engine
 - Calendar server interaction (stamp + upgrade)
