@@ -255,4 +255,22 @@ mod tests {
             parser::count_attestations(&reparsed.timestamp),
         );
     }
+
+    #[test]
+    fn test_write_ots_roundtrip_golden_pending() {
+        // This fixture was created by the reference Python ots tool.
+        // A byte-identical roundtrip proves our parser and writer both
+        // handle the nested varbytes in pending attestations correctly.
+        let original = std::fs::read("tests/fixtures/golden-pending.txt.ots")
+            .expect("fixture file missing");
+        let ots = parser::parse_ots(&original).expect("failed to parse");
+
+        let serialized = write_ots(&ots);
+
+        // Byte-identical output — the strongest roundtrip guarantee
+        assert_eq!(
+            serialized, original,
+            "roundtrip of golden pending fixture should be byte-identical"
+        );
+    }
 }

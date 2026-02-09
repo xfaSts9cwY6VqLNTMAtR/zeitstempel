@@ -634,4 +634,43 @@ mod tests {
 
         assert_eq!(find_bitcoin(&ots.timestamp), Some(358391));
     }
+
+    #[test]
+    fn test_parse_golden_pending_fixture() {
+        // This fixture was created by the reference Python ots tool.
+        // It catches bugs where the nested varbytes in pending attestation
+        // payloads are not properly unwrapped.
+        let data = std::fs::read("tests/fixtures/golden-pending.txt.ots")
+            .expect("fixture file missing — run from project root");
+        let ots = parse_ots(&data).expect("failed to parse golden-pending.txt.ots");
+
+        assert_eq!(ots.hash_op, HashOp::Sha256);
+
+        // Collect all pending URIs from the tree
+        fn collect_pending(ts: &Timestamp, uris: &mut Vec<String>) {
+            for att in &ts.attestations {
+                if let Attestation::Pending { uri } = att {
+                    uris.push(uri.clone());
+                }
+            }
+            for (_, child) in &ts.ops {
+                collect_pending(child, uris);
+            }
+        }
+
+        let mut uris = Vec::new();
+        collect_pending(&ots.timestamp, &mut uris);
+
+        // The reference tool submitted to 4 calendar servers
+        assert!(uris.len() >= 2, "expected at least 2 pending URIs, got {}", uris.len());
+
+        // Every URI must be a valid https URL — no stray prefix bytes
+        for uri in &uris {
+            assert!(
+                uri.starts_with("https://"),
+                "URI should start with https://, got: {}",
+                uri,
+            );
+        }
+    }
 }

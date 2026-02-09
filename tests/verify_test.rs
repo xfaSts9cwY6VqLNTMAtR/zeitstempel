@@ -302,6 +302,28 @@ fn test_stamp_hint_mentions_upgrade() {
     std::fs::remove_dir(&tmp_dir).ok();
 }
 
+/// Golden pending fixture: parse by the reference Python ots tool, show with info.
+/// Catches the nested varbytes bug — URIs must not have stray prefix bytes.
+#[test]
+fn test_info_golden_pending_fixture() {
+    let (code, stdout, _) = run_zeitstempel(&["info", "tests/fixtures/golden-pending.txt.ots"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("SHA256"));
+    assert!(stdout.contains("Pending"));
+    // URIs must start with https://, not with garbage prefix bytes like + or -
+    assert!(
+        stdout.contains("Pending (https://"),
+        "Pending URIs should start with https://, got:\n{}",
+        stdout,
+    );
+    // Must NOT contain corrupted URIs
+    assert!(
+        !stdout.contains("Pending (-") && !stdout.contains("Pending (+") && !stdout.contains("Pending (("),
+        "Pending URIs should not have prefix bytes, got:\n{}",
+        stdout,
+    );
+}
+
 /// Writer round-trip: parse → serialize → parse → compare attestations and block height.
 #[test]
 fn test_writer_roundtrip_preserves_structure() {
