@@ -130,7 +130,11 @@ pub fn write_attestation(buf: &mut Vec<u8>, att: &Attestation) {
         }
         Attestation::Pending { uri } => {
             buf.extend_from_slice(&parser::ATT_TAG_PENDING);
-            write_varbytes(buf, uri.as_bytes());
+            // The pending payload wraps the URI in an inner varbytes
+            // (matching the reference python-opentimestamps format).
+            let mut payload = Vec::new();
+            write_varbytes(&mut payload, uri.as_bytes());
+            write_varbytes(buf, &payload);
         }
         Attestation::Unknown { tag, payload } => {
             buf.extend_from_slice(tag);

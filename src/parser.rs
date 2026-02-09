@@ -393,7 +393,10 @@ fn parse_attestation(p: &mut Parser) -> Result<Attestation, ParseError> {
         let height = read_varuint_from_slice(&payload)?;
         Ok(Attestation::Ethereum { height })
     } else if tag == ATT_TAG_PENDING {
-        let uri = String::from_utf8(payload)
+        // The payload contains a nested varbytes: varuint(uri_len) + uri_bytes.
+        // We need to strip that inner length prefix to get the actual URI.
+        let uri_bytes = read_varbytes_from_slice(&payload)?;
+        let uri = String::from_utf8(uri_bytes)
             .map_err(|_| ParseError::InvalidData("pending attestation URI is not valid UTF-8"))?;
         Ok(Attestation::Pending { uri })
     } else {
@@ -405,6 +408,12 @@ fn parse_attestation(p: &mut Parser) -> Result<Attestation, ParseError> {
 fn read_varuint_from_slice(data: &[u8]) -> Result<u64, ParseError> {
     let mut p = Parser::new(data);
     p.read_varuint()
+}
+
+/// Read a varbytes from a byte slice (used for nested pending attestation payloads).
+fn read_varbytes_from_slice(data: &[u8]) -> Result<Vec<u8>, ParseError> {
+    let mut p = Parser::new(data);
+    p.read_varbytes()
 }
 
 // ── Display helpers ────────────────────────────────────────────────
