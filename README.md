@@ -133,6 +133,10 @@ src/
 - Proof tree forks (multiple attestation paths)
 - API fallback: Blockstream.info -> mempool.space
 
+## See also
+
+**[zeitstempel-react](https://github.com/xfaSts9cwY6VqLNTMAtR/zeitstempel-react)** -- a TypeScript port of the same core engine, usable as a library in browsers and Node.js. Includes optional React components for verification UI. Same stamp/upgrade/verify lifecycle, same `.ots` format, same calendar servers.
+
 ## License
 
 MIT
