@@ -14,6 +14,7 @@ pub struct BlockInfo {
     pub block_hash: String,
     pub merkle_root: String,  // hex, display order (big-endian)
     pub timestamp: u64,       // Unix epoch seconds
+    pub previousblockhash: Option<String>, // for future chain validation
 }
 
 #[derive(Debug)]
@@ -74,11 +75,38 @@ fn get_block_info_from(base_url: &str, height: u64) -> Result<BlockInfo, ApiErro
         .as_u64()
         .ok_or_else(|| ApiError::Parse("missing timestamp in block JSON".into()))?;
 
+    // Phase 1 hardening: reject obviously spoofed or bogus blocks
+    const MIN_HEIGHT: u64 = 300_000; // OTS usage started well after this height
+    const MAX_FUTURE_SKEW_SECS: u64 = 2 * 3600;
+
+    if height < MIN_HEIGHT {
+        return Err(ApiError::Parse(format!(
+            "block height {} is below minimum ({}); this looks like a spoofed response",
+            height, MIN_HEIGHT
+        )));
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    if timestamp > now + MAX_FUTURE_SKEW_SECS {
+        return Err(ApiError::Parse(
+            "block timestamp is in the future (more than 2h skew)".into(),
+        ));
+    }
+
+    let previousblockhash = json["previousblockhash"]
+        .as_str()
+        .map(|s| s.to_string());
+
     Ok(BlockInfo {
         height,
         block_hash,
         merkle_root,
         timestamp,
+        previousblockhash,
     })
 }
 
