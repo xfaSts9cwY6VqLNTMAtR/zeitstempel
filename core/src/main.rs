@@ -1,10 +1,4 @@
-mod parser;
-mod operations;
-mod verify;
-mod bitcoin;
-mod writer;
-mod stamp;
-mod upgrade;
+use zeitstempel::{parser, stamp, upgrade, verify};
 
 use std::fs;
 use std::process;
