@@ -112,11 +112,17 @@ fn upgrade_timestamp(ts: &mut Timestamp, msg: &[u8], result: &mut UpgradeResult,
         }
     }
 
+    // Snapshot the count of original ops before mutation so we only
+    // recurse into pre-existing children. Newly merged sub-tree ops
+    // (from an upgraded calendar response) will be visited on the
+    // next `upgrade` invocation — matching the TypeScript port and
+    // avoiding immediate fetches against any pending URIs the
+    // calendar may have injected.
+    let original_ops_len = ts.ops.len();
     ts.attestations = new_attestations;
     ts.ops.extend(new_ops);
 
-    // Recurse into operation children
-    for (op, child) in &mut ts.ops {
+    for (op, child) in ts.ops[..original_ops_len].iter_mut() {
         let new_msg = match operations::apply(op, msg) {
             Ok(m) => m,
             Err(e) => {
@@ -161,8 +167,10 @@ fn fetch_upgrade(uri: &str, msg: &[u8]) -> Result<Option<Timestamp>, String> {
         return Ok(None);
     }
 
-    // Parse the response as a timestamp sub-tree
-    let sub_tree = parser::parse_timestamp_from_bytes(&body, msg)
+    // Parse the response as a timestamp sub-tree. Parsing is purely
+    // structural; the caller replays the hash chain when walking the
+    // merged tree later.
+    let sub_tree = parser::parse_timestamp_from_bytes(&body)
         .map_err(|e| format!("Failed to parse calendar response from {}: {}", uri, e))?;
 
     Ok(Some(sub_tree))

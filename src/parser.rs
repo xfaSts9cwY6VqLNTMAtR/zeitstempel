@@ -266,7 +266,7 @@ pub fn parse_ots(data: &[u8]) -> Result<OtsFile, ParseError> {
     let file_digest = p.read_bytes(digest_len)?.to_vec();
 
     // 5. Parse the recursive timestamp tree
-    let timestamp = parse_timestamp(&mut p, &file_digest)?;
+    let timestamp = parse_timestamp(&mut p)?;
 
     Ok(OtsFile { hash_op, file_digest, timestamp })
 }
@@ -290,17 +290,22 @@ const MAX_DEPTH: usize = 256;
 /// Parse a timestamp node recursively.
 ///
 /// A timestamp is a sequence of:
-///   - `0xFF` forks: parse another timestamp from the same message
+///   - `0xFF` forks: parse another sibling branch
 ///   - `0x00` attestation: leaf node
 ///   - operation bytes: chain an operation, then parse child timestamp
 ///
 /// Forks come first (each `0xFF` means "another branch starts here"),
 /// then the final branch is the implicit continuation (no `0xFF` prefix).
-fn parse_timestamp(p: &mut Parser, msg: &[u8]) -> Result<Timestamp, ParseError> {
-    parse_timestamp_inner(p, msg, 0)
+///
+/// Parsing is purely structural — it does NOT execute the hash chain.
+/// Verify and upgrade walk the tree separately, applying ops to the
+/// running message. Executing them during parse would do nothing
+/// useful and would let a malicious .ots burn CPU during `info`.
+fn parse_timestamp(p: &mut Parser) -> Result<Timestamp, ParseError> {
+    parse_timestamp_inner(p, 0)
 }
 
-fn parse_timestamp_inner(p: &mut Parser, msg: &[u8], depth: usize) -> Result<Timestamp, ParseError> {
+fn parse_timestamp_inner(p: &mut Parser, depth: usize) -> Result<Timestamp, ParseError> {
     if depth > MAX_DEPTH {
         return Err(ParseError::InvalidData("timestamp tree exceeds maximum depth"));
     }
@@ -311,12 +316,12 @@ fn parse_timestamp_inner(p: &mut Parser, msg: &[u8], depth: usize) -> Result<Tim
     // Consume fork markers — each one spawns a sibling branch
     while p.remaining() > 0 && p.peek()? == TAG_FORK {
         p.read_byte()?; // consume the 0xFF
-        parse_timestamp_branch(p, msg, &mut attestations, &mut ops, depth)?;
+        parse_timestamp_branch(p, &mut attestations, &mut ops, depth)?;
     }
 
     // Parse the final (non-forked) branch
     if p.remaining() > 0 {
-        parse_timestamp_branch(p, msg, &mut attestations, &mut ops, depth)?;
+        parse_timestamp_branch(p, &mut attestations, &mut ops, depth)?;
     }
 
     Ok(Timestamp { attestations, ops })
@@ -325,7 +330,6 @@ fn parse_timestamp_inner(p: &mut Parser, msg: &[u8], depth: usize) -> Result<Tim
 /// Parse one branch of a timestamp: either an attestation or an operation chain.
 fn parse_timestamp_branch(
     p: &mut Parser,
-    msg: &[u8],
     attestations: &mut Vec<Attestation>,
     ops: &mut Vec<(Operation, Timestamp)>,
     depth: usize,
@@ -338,15 +342,7 @@ fn parse_timestamp_branch(
         attestations.push(att);
     } else {
         let op = parse_operation(p)?;
-        let new_msg = crate::operations::apply(&op, msg)
-            .map_err(|e| ParseError::InvalidData(
-                if matches!(e, crate::operations::OpError::UnsupportedOp(_)) {
-                    "unsupported operation: Keccak256"
-                } else {
-                    "operation failed"
-                }
-            ))?;
-        let child = parse_timestamp_inner(p, &new_msg, depth + 1)?;
+        let child = parse_timestamp_inner(p, depth + 1)?;
         ops.push((op, child));
     }
 
@@ -398,10 +394,68 @@ fn parse_attestation(p: &mut Parser) -> Result<Attestation, ParseError> {
         let uri_bytes = read_varbytes_from_slice(&payload)?;
         let uri = String::from_utf8(uri_bytes)
             .map_err(|_| ParseError::InvalidData("pending attestation URI is not valid UTF-8"))?;
+        validate_calendar_uri(&uri)?;
         Ok(Attestation::Pending { uri })
     } else {
         Ok(Attestation::Unknown { tag, payload })
     }
+}
+
+/// Validate a pending-calendar URI from an .ots file.
+///
+/// The URI is fully attacker-controlled (anyone who writes the .ots
+/// can put any string here), and `upgrade` will later issue an HTTP
+/// GET against `${uri}/timestamp/${hex(digest)}`. Without validation
+/// that becomes an SSRF + digest-exfiltration primitive: a crafted
+/// .ots could point at internal services, the cloud metadata endpoint
+/// (169.254.169.254), or an attacker-controlled tracker.
+///
+/// We require an https origin with a registrable hostname and no
+/// path, query, fragment, port, or user-info. That matches every
+/// real-world calendar URI (e.g. `https://alice.btc.calendar.opentimestamps.org`).
+fn validate_calendar_uri(uri: &str) -> Result<(), ParseError> {
+    let rest = uri.strip_prefix("https://")
+        .ok_or(ParseError::InvalidData("pending URI must use https scheme"))?;
+
+    // Anything after a single trailing slash is a path — disallowed.
+    let host = match rest.find('/') {
+        None => rest,
+        Some(idx) => {
+            if &rest[idx..] != "/" {
+                return Err(ParseError::InvalidData("pending URI must not contain a path"));
+            }
+            &rest[..idx]
+        }
+    };
+
+    if host.contains('?') || host.contains('#') {
+        return Err(ParseError::InvalidData("pending URI must not contain a query or fragment"));
+    }
+    if host.contains('@') {
+        return Err(ParseError::InvalidData("pending URI must not contain user info"));
+    }
+    if host.contains(':') || host.contains('[') || host.contains(']') {
+        return Err(ParseError::InvalidData("pending URI must not contain a port or IPv6 literal"));
+    }
+    if !host.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-') {
+        return Err(ParseError::InvalidData("pending URI host contains invalid characters"));
+    }
+    if host.is_empty() || host.len() > 253 {
+        return Err(ParseError::InvalidData("pending URI host has invalid length"));
+    }
+    if !host.contains('.') {
+        return Err(ParseError::InvalidData("pending URI host must be a registrable domain"));
+    }
+    // Reject IPv4 literals (every dot-separated label is purely digits).
+    if host.split('.').all(|label| !label.is_empty() && label.bytes().all(|b| b.is_ascii_digit())) {
+        return Err(ParseError::InvalidData("pending URI must not target an IPv4 literal"));
+    }
+    // Reject localhost
+    let lower = host.to_ascii_lowercase();
+    if lower == "localhost" || lower.ends_with(".localhost") {
+        return Err(ParseError::InvalidData("pending URI must not target localhost"));
+    }
+    Ok(())
 }
 
 /// Read a varuint from a byte slice (used for attestation payloads).
@@ -477,12 +531,11 @@ pub fn count_attestations(ts: &Timestamp) -> usize {
 
 /// Parse a timestamp sub-tree from raw bytes (e.g. a calendar server response).
 ///
-/// `msg` is the current hash state at this point in the proof chain —
-/// it's needed because operations in the tree compute new messages as
-/// they go.
-pub fn parse_timestamp_from_bytes(data: &[u8], msg: &[u8]) -> Result<Timestamp, ParseError> {
+/// Parsing is purely structural — verify/upgrade will replay the hash
+/// chain on top of the returned tree.
+pub fn parse_timestamp_from_bytes(data: &[u8]) -> Result<Timestamp, ParseError> {
     let mut p = Parser::new(data);
-    parse_timestamp(&mut p, msg)
+    parse_timestamp(&mut p)
 }
 
 // ── Test support — exposes parser internals for roundtrip tests ───
@@ -633,6 +686,57 @@ mod tests {
         }
 
         assert_eq!(find_bitcoin(&ots.timestamp), Some(358391));
+    }
+
+    // ── Calendar-URI validation ────────────────────────────────────
+    //
+    // The pending URI is fully attacker-controlled. parse_ots must
+    // reject anything that isn't an https origin with a registrable
+    // hostname — otherwise upgrade becomes an SSRF + digest-exfil
+    // primitive.
+
+    fn ots_with_pending_uri(uri: &str) -> Vec<u8> {
+        let ots = OtsFile {
+            hash_op: HashOp::Sha256,
+            file_digest: vec![0u8; 32],
+            timestamp: Timestamp {
+                attestations: vec![Attestation::Pending { uri: uri.to_string() }],
+                ops: vec![],
+            },
+        };
+        crate::writer::write_ots(&ots)
+    }
+
+    #[test]
+    fn test_calendar_uri_accepts_normal() {
+        let bytes = ots_with_pending_uri("https://alice.btc.calendar.opentimestamps.org");
+        assert!(parse_ots(&bytes).is_ok());
+    }
+
+    #[test]
+    fn test_calendar_uri_rejects_bad_inputs() {
+        let bad = [
+            "http://alice.btc.calendar.opentimestamps.org",  // no TLS
+            "file:///etc/passwd",                             // file scheme
+            "https://127.0.0.1",                              // IPv4 literal
+            "https://169.254.169.254",                        // cloud metadata
+            "https://[::1]",                                  // IPv6 literal
+            "https://localhost",                              // localhost
+            "https://intranet",                               // bare hostname
+            "https://attacker.example/exfil",                 // path
+            "https://attacker.example?x=1",                   // query
+            "https://attacker.example#frag",                  // fragment
+            "https://attacker.example:8080",                  // port
+            "https://user:pw@attacker.example",               // user info
+        ];
+        for uri in bad {
+            let bytes = ots_with_pending_uri(uri);
+            assert!(
+                parse_ots(&bytes).is_err(),
+                "expected parse to reject URI: {}",
+                uri,
+            );
+        }
     }
 
     #[test]
