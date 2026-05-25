@@ -8,3 +8,5 @@ license = "MIT"
 
 [dependencies]
 zeitstempel = { path = "../core" }
+iced = { version = "0.14", features = ["tokio", "advanced"] }
+tokio = { version = "1", features = ["rt-multi-thread"] }

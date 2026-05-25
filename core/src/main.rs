@@ -149,7 +149,7 @@ fn run_verify(file_path: &str, ots_path: &str) {
         match result {
             verify::VerifyResult::BitcoinVerified { height, block_hash, timestamp } => {
                 any_verified = true;
-                let dt = format_unix_timestamp(*timestamp);
+                let dt = zeitstempel::format_unix_utc(*timestamp);
                 println!();
                 println!("  Verified! Data existed before Bitcoin block #{}", height);
                 println!("  Block time: {}", dt);
@@ -200,53 +200,3 @@ fn read_file_or_exit(path: &str) -> Vec<u8> {
     }
 }
 
-/// Format a Unix timestamp as a human-readable UTC string.
-///
-/// We do this by hand to avoid pulling in the `chrono` crate.
-fn format_unix_timestamp(ts: u64) -> String {
-    // Days from Unix epoch to each month start (non-leap year)
-    const DAYS_TO_MONTH: [u32; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
-
-    let secs = ts;
-    let days_total = (secs / 86400) as u32;
-    let time_of_day = (secs % 86400) as u32;
-
-    let hours = time_of_day / 3600;
-    let minutes = (time_of_day % 3600) / 60;
-    let seconds = time_of_day % 60;
-
-    // Compute year and day-of-year from days since epoch
-    // Using the algorithm: count 400-year, 100-year, 4-year, 1-year cycles
-    let mut remaining_days = days_total;
-    let mut year: u32 = 1970;
-
-    loop {
-        let days_in_year = if is_leap_year(year) { 366 } else { 365 };
-        if remaining_days < days_in_year {
-            break;
-        }
-        remaining_days -= days_in_year;
-        year += 1;
-    }
-
-    let leap = is_leap_year(year);
-    let mut month: u32 = 12;
-    for m in (0..12).rev() {
-        let mut d = DAYS_TO_MONTH[m];
-        if m >= 2 && leap {
-            d += 1;
-        }
-        if remaining_days >= d {
-            month = (m + 1) as u32;
-            remaining_days -= d;
-            break;
-        }
-    }
-    let day = remaining_days + 1;
-
-    format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02} UTC", year, month, day, hours, minutes, seconds)
-}
-
-fn is_leap_year(y: u32) -> bool {
-    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
-}
