@@ -134,16 +134,65 @@ pub fn merkle_root_to_le_bytes(hex_be: &str) -> Result<Vec<u8>, ApiError> {
     Ok(le)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_hex_to_bytes_accepts_ascii_hex() {
+        assert_eq!(hex_to_bytes("00ff42").unwrap(), vec![0x00, 0xff, 0x42]);
+    }
+
+    #[test]
+    fn test_hex_to_bytes_rejects_odd_length() {
+        assert!(hex_to_bytes("abc").is_err());
+    }
+
+    #[test]
+    fn test_hex_to_bytes_does_not_panic_on_utf8() {
+        // 16 crab emojis = 64 bytes (even); passes the 64-char length
+        // check the API caller uses, but is not hex. The previous
+        // implementation panicked on `&hex[i..i+2]` slicing inside a
+        // multi-byte code point.
+        let crabby = "\u{1F980}".repeat(16);
+        assert_eq!(crabby.len(), 64);
+        let result = hex_to_bytes(&crabby);
+        assert!(result.is_err(), "expected error, got {:?}", result);
+    }
+
+    #[test]
+    fn test_hex_to_bytes_rejects_non_hex_ascii() {
+        assert!(hex_to_bytes("zz").is_err());
+        assert!(hex_to_bytes("0g").is_err());
+    }
+
+    #[test]
+    fn test_merkle_root_le_reverses_bytes() {
+        // "0102" big-endian → bytes [0x01, 0x02] → reversed [0x02, 0x01]
+        assert_eq!(merkle_root_to_le_bytes("0102").unwrap(), vec![0x02, 0x01]);
+    }
+}
+
 /// Parse a hex string into bytes.
+///
+/// Validates ASCII hex before slicing — a compromised Bitcoin API
+/// returning a `merkle_root` with multi-byte UTF-8 characters would
+/// otherwise panic on the `&hex[i..i+2]` slice landing in the middle
+/// of a code point.
 fn hex_to_bytes(hex: &str) -> Result<Vec<u8>, String> {
-    if hex.len() % 2 != 0 {
+    let bytes = hex.as_bytes();
+    if bytes.len() % 2 != 0 {
         return Err("odd-length hex string".into());
     }
-    (0..hex.len())
-        .step_by(2)
-        .map(|i| {
-            u8::from_str_radix(&hex[i..i + 2], 16)
-                .map_err(|e| format!("invalid hex at offset {}: {}", i, e))
+    if !bytes.iter().all(|b| b.is_ascii_hexdigit()) {
+        return Err("non-hex character in input".into());
+    }
+    bytes
+        .chunks_exact(2)
+        .map(|pair| {
+            // SAFETY: `pair` is two ASCII hex bytes, validated above.
+            let s = std::str::from_utf8(pair).expect("ASCII hex");
+            u8::from_str_radix(s, 16).map_err(|e| format!("invalid hex: {}", e))
         })
         .collect()
 }
