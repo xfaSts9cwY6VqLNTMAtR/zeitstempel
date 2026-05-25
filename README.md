@@ -12,6 +12,14 @@ zeitstempel handles the full lifecycle: stamping (submitting your file's hash to
 
 Written in Rust, compiles to a single portable binary. The binary `.ots` format parser, serializer, tree walker, and operation replay engine are all written from scratch — no `opentimestamps` library dependency.
 
+## A note on privacy
+
+OpenTimestamps anchors a *hash* to the Bitcoin blockchain — not the data itself. The 32-byte digest is the only thing that ever needs to leave your machine.
+
+In my view this is a real issue with the standard implementation at [opentimestamps.org](https://opentimestamps.org/): the web tool asks you to hand over the file itself. Even if the page happens to hash client-side today, the design trains users to drop sensitive files into a "verification tool" — and a compromised page or a malicious mirror could exfiltrate them without the user noticing. For anything you wouldn't want a stranger to read, that's a hard no.
+
+zeitstempel does it the other way round by default. **Hash locally, ship only the digest.** `zeitstempel stamp <file>` reads bytes on your machine, computes SHA256 in process, and only the digest is sent. The calendar can confirm the timestamp without ever seeing what was timestamped.
+
 ## Usage
 
 ```bash
@@ -135,7 +143,7 @@ src/
 
 ## See also
 
-**[zeitstempel-react](https://github.com/xfaSts9cwY6VqLNTMAtR/zeitstempel-react)** -- a TypeScript port of the same core engine, usable as a library in browsers and Node.js. Includes optional React components for verification UI. Same stamp/upgrade/verify lifecycle, same `.ots` format, same calendar servers.
+**[zeitstempel-react](https://github.com/xfaSts9cwY6VqLNTMAtR/zeitstempel-react)** ([`zeitstempel` on npm](https://www.npmjs.com/package/zeitstempel)) -- a TypeScript port of the same core engine, usable as a library in browsers and Node.js. Includes optional React components for verification UI. Same stamp/upgrade/verify lifecycle, same `.ots` format, same calendar servers.
 
 ## License
 
