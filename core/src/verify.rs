@@ -11,6 +11,11 @@ pub enum VerifyResult {
     BitcoinVerified {
         height: u64,
         block_hash: String,
+        /// Merkle root as reported by the Bitcoin block header — the
+        /// specific 32-byte value the proof chain had to match. Useful
+        /// for UI that wants to show "here's the value on chain that
+        /// committed to your file".
+        merkle_root: String,
         timestamp: u64,
     },
     /// Proof chain ends at a pending calendar.
@@ -151,6 +156,7 @@ fn verify_bitcoin(height: u64, msg: &[u8]) -> VerifyResult {
         VerifyResult::BitcoinVerified {
             height,
             block_hash: block_info.block_hash,
+            merkle_root: block_info.merkle_root,
             timestamp: block_info.timestamp,
         }
     } else {

@@ -147,7 +147,7 @@ fn run_verify(file_path: &str, ots_path: &str) {
 
     for result in &results {
         match result {
-            verify::VerifyResult::BitcoinVerified { height, block_hash, timestamp } => {
+            verify::VerifyResult::BitcoinVerified { height, block_hash, merkle_root: _, timestamp } => {
                 any_verified = true;
                 let dt = zeitstempel::format_unix_utc(*timestamp);
                 println!();
