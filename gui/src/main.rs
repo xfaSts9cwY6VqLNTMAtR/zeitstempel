@@ -13,16 +13,17 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use iced::widget::canvas::{self, Canvas, Frame, Geometry, Path as CanvasPath, Stroke};
 use iced::widget::{Space, column, container, row, text};
 use iced::{
-    Border, Color, Element, Length, Subscription, Task, Theme,
+    Border, Color, Element, Length, Point as IcedPoint, Rectangle, Renderer,
+    Size as IcedSize, Subscription, Task, Theme,
     event::{self, Event},
-    window,
+    mouse, window,
 };
 
 use zeitstempel::format_unix_utc;
 use zeitstempel::operations;
-use zeitstempel::parser::{Attestation, Operation, OtsFile, Timestamp};
 use zeitstempel::verify::{self, VerifyResult};
 
 // ── Window + layout constants ──────────────────────────────────────
@@ -131,10 +132,6 @@ enum Outcome {
         /// We show this so the user can see their file's actual
         /// digest as the input to the proof chain.
         file_hash: String,
-        /// Each step in the proof chain leading from `file_hash` to
-        /// the Bitcoin attestation. `(operation_label, resulting_hash_hex)`.
-        /// The last entry's hash is the calculated merkle root.
-        proof_steps: Vec<(String, String)>,
     },
     Failed { block: u64 },
     Pending { host: String },
@@ -399,48 +396,38 @@ impl App {
             _ => None,
         });
 
-        let proof_steps: Vec<(String, String)> = match self.outcome.as_ref() {
-            Some(Outcome::Verified { proof_steps, .. }) => proof_steps.clone(),
-            _ => Vec::new(),
-        };
-
-        let mut content: Vec<Element<'_, Message>> = vec![
-            data_card_label("Your file").into(),
+        column![
+            data_card_label("Your file"),
             value_card(file_name, false, false),
-            Space::new().height(Length::Fixed(10.0)).into(),
-            connector("hashed with SHA-256 — produces a 32-byte fingerprint of the file").into(),
-            Space::new().height(Length::Fixed(10.0)).into(),
-            data_card_label("File hash").into(),
+            Space::new().height(Length::Fixed(10.0)),
+            connector("hashed with SHA-256 — produces a 32-byte fingerprint of the file"),
+            Space::new().height(Length::Fixed(10.0)),
+
+            data_card_label("File hash"),
             value_card_optional(file_hash.clone(), 14, 12, true, false),
-            Space::new().height(Length::Fixed(14.0)).into(),
-            recipe_explainer().into(),
-            Space::new().height(Length::Fixed(10.0)).into(),
-        ];
 
-        // The recipe, made literal: render the operation chain from the
-        // .ots. Each step shows what was done and what hash resulted.
-        // Long chains collapse to "first N + … + final" so the panel
-        // stays readable for proofs with 20+ ops.
-        if proof_steps.is_empty() {
-            content.push(value_card_optional(merkle_root.clone(), 10, 8, true, verified));
-        } else {
-            content.extend(render_proof_walk(&proof_steps, verified));
-        }
+            Space::new().height(Length::Fixed(16.0)),
+            tree_intro(),
+            Space::new().height(Length::Fixed(4.0)),
+            merkle_tree_canvas(verified),
 
-        content.extend(vec![
-            Space::new().height(Length::Fixed(18.0)).into(),
+            Space::new().height(Length::Fixed(12.0)),
+            data_card_label("Calculated merkle root"),
+            value_card_optional(merkle_root.clone(), 10, 8, true, verified),
+
+            Space::new().height(Length::Fixed(18.0)),
             boundary_marker("your machine", "Bitcoin chain"),
-            Space::new().height(Length::Fixed(14.0)).into(),
-            self.block_artifact_card(merkle_root.clone(), verified),
-            Space::new().height(Length::Fixed(18.0)).into(),
-            self.proof_sentence(),
-            Space::new().height(Length::Fixed(14.0)).into(),
-            forgery_explainer().into(),
-            Space::new().height(Length::Fixed(20.0)).into(),
-            self.block_evidence(),
-        ]);
+            Space::new().height(Length::Fixed(14.0)),
 
-        iced::widget::Column::with_children(content).into()
+            self.block_artifact_card(merkle_root.clone(), verified),
+            Space::new().height(Length::Fixed(16.0)),
+            self.proof_sentence(),
+            Space::new().height(Length::Fixed(14.0)),
+            forgery_explainer(),
+            Space::new().height(Length::Fixed(20.0)),
+            self.block_evidence(),
+        ]
+        .into()
     }
 
     /// The Bitcoin block, rendered as an artifact: a labeled box whose
@@ -786,85 +773,260 @@ fn middle_truncate(s: &str, head: usize, tail: usize) -> String {
     format!("{}…{}", &s[..head], &s[s.len() - tail..])
 }
 
-/// Render the actual proof-chain walk: a vertical sequence of cards,
-/// where each card shows the hash that resulted from applying one
-/// of the .ots operations to the previous value. The user can see
-/// their file's hash *transforming*, step by step, into the value
-/// stored in the block.
-///
-/// For long chains (> 5 ops) we show the first three operations,
-/// then a "…N more operations…" gap, then the final operation.
-fn render_proof_walk<'a>(
-    steps: &[(String, String)],
+// ── Merkle-tree visualization ──────────────────────────────────────
+//
+// Schematic 4-level tree (8 leaves → 4 → 2 → root). One leaf is
+// marked as "your file"; the path from it to the root is highlighted
+// brand-blue (and root settles to confirmed-green once verified).
+// The path's *siblings* — the hashes the .ots provides — are amber:
+// those are the only off-path nodes the verifier actually needs.
+//
+// Everything else is dim: the other people's files that were
+// bundled into the same merkle tree, plus the intermediate hashes
+// in subtrees we never have to compute. The user sees that their
+// file is one of many leaves, and that the .ots is just the path
+// out of that crowd.
+
+const TREE_W: f32 = 480.0;
+const TREE_H: f32 = 210.0;
+
+const BOX_W: f32 = 38.0;
+const BOX_H: f32 = 14.0;
+const ROOT_W: f32 = 78.0;
+const ROOT_H: f32 = 18.0;
+
+const LEAF_CX: [f32; 8] = [44.0, 100.0, 156.0, 212.0, 268.0, 324.0, 380.0, 436.0];
+const LEAF_CY: f32 = 178.0;
+const L1_CX: [f32; 4] = [72.0, 184.0, 296.0, 408.0];
+const L1_CY: f32 = 130.0;
+const L2_CX: [f32; 2] = [128.0, 352.0];
+const L2_CY: f32 = 82.0;
+const ROOT_CX: f32 = 240.0;
+const ROOT_CY: f32 = 36.0;
+
+/// Index of the highlighted leaf — the one labelled "your file".
+const YOUR_LEAF: usize = 3;
+
+struct MerkleTree {
     verified: bool,
-) -> Vec<Element<'a, Message>> {
-    let mut out: Vec<Element<'a, Message>> = Vec::new();
-    let total = steps.len();
-    if total == 0 {
-        return out;
-    }
-
-    let final_index = total - 1;
-    let max_visible_intermediate = 3;
-    let show_all = total <= max_visible_intermediate + 1;
-
-    // Visible intermediate operations (everything but the final step).
-    let visible_count = if show_all {
-        final_index
-    } else {
-        max_visible_intermediate
-    };
-
-    for (i, (op_label, hex)) in steps.iter().take(visible_count).enumerate() {
-        out.push(Space::new().height(Length::Fixed(6.0)).into());
-        out.push(connector(format!("apply: {op_label}")));
-        out.push(Space::new().height(Length::Fixed(6.0)).into());
-        out.push(data_card_label(format!("after step {}", i + 1)));
-        out.push(value_card(middle_truncate(hex, 14, 12), true, false));
-    }
-
-    if !show_all {
-        let hidden = total - max_visible_intermediate - 1;
-        out.push(Space::new().height(Length::Fixed(6.0)).into());
-        out.push(connector(format!("… {hidden} more operations of the same shape …")));
-    }
-
-    // Final step → calculated merkle root.
-    if let Some((op_label, hex)) = steps.last() {
-        out.push(Space::new().height(Length::Fixed(6.0)).into());
-        out.push(connector(format!("apply: {op_label}")));
-        out.push(Space::new().height(Length::Fixed(6.0)).into());
-        out.push(data_card_label("Calculated merkle root"));
-        out.push(value_card(middle_truncate(hex, 10, 8), true, verified));
-    }
-
-    out
 }
 
-/// Plain-language explanation of what the .ots file actually does —
-/// sits between the "File hash" card and the "Calculated merkle root"
-/// card to replace the jargon "walk up the merkle tree" with a
-/// concrete recipe metaphor.
-fn recipe_explainer<'a>() -> Element<'a, Message> {
-    container(
-        column![
-            text("When this file was timestamped, a calendar server bundled its")
-                .size(12).color(COL_INK_2),
-            text("hash together with thousands of other files' hashes by")
-                .size(12).color(COL_INK_2),
-            text("pair-hashing them — a small tree of SHA-256 operations.")
-                .size(12).color(COL_INK_2),
-            Space::new().height(Length::Fixed(6.0)),
-            text("The .ots file is a recipe: it records exactly which sibling")
-                .size(12).color(COL_INK),
-            text("hashes yours was combined with, and in what order. Applying")
-                .size(12).color(COL_INK),
-            text("that recipe to your file's hash reproduces the bundled value.")
-                .size(12).color(COL_INK),
-        ]
-        .spacing(3),
-    )
-    .padding(2)
+#[derive(Clone, Copy, PartialEq)]
+enum NodeKind {
+    OnPath,
+    Sibling, // provided by the .ots
+    Other,
+}
+
+impl MerkleTree {
+    fn node_color(&self, kind: NodeKind, is_root: bool) -> Color {
+        match kind {
+            NodeKind::OnPath if is_root && self.verified => COL_CONFIRMED,
+            NodeKind::OnPath => COL_BRAND,
+            NodeKind::Sibling => COL_NETWORK_MARK,
+            NodeKind::Other => Color::from_rgb(0.86, 0.86, 0.88),
+        }
+    }
+
+    fn fill_box(&self, frame: &mut Frame, cx: f32, cy: f32, w: f32, h: f32, color: Color) {
+        let top_left = IcedPoint::new(cx - w / 2.0, cy - h / 2.0);
+        let path = CanvasPath::rectangle(top_left, IcedSize::new(w, h));
+        frame.fill(&path, color);
+    }
+
+    fn draw_edge(&self, frame: &mut Frame, child: (f32, f32), parent: (f32, f32), highlighted: bool) {
+        let stroke = if highlighted {
+            Stroke::default().with_color(COL_BRAND).with_width(1.5)
+        } else {
+            Stroke::default().with_color(Color { a: 0.55, ..COL_INK_3 }).with_width(1.0)
+        };
+        let path = CanvasPath::line(IcedPoint::new(child.0, child.1), IcedPoint::new(parent.0, parent.1));
+        frame.stroke(&path, stroke);
+    }
+
+    fn caption(&self, frame: &mut Frame, content: &str, pos: (f32, f32), size: f32, color: Color) {
+        let t = canvas::Text {
+            content: content.to_string(),
+            position: IcedPoint::new(pos.0, pos.1),
+            color,
+            size: iced::Pixels(size),
+            align_x: iced::widget::text::Alignment::Center,
+            align_y: iced::alignment::Vertical::Center,
+            ..canvas::Text::default()
+        };
+        frame.fill_text(t);
+    }
+}
+
+impl<Message> canvas::Program<Message> for MerkleTree {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+
+        // ── Edges ─────────────────────────────────────────────────
+        // Leaf → L1
+        for i in 0..8 {
+            let parent = i / 2;
+            let on_path = i == YOUR_LEAF || (i == YOUR_LEAF ^ 1 && false); // siblings aren't "on path"
+            let highlight = i == YOUR_LEAF;
+            self.draw_edge(
+                &mut frame,
+                (LEAF_CX[i], LEAF_CY - BOX_H / 2.0),
+                (L1_CX[parent], L1_CY + BOX_H / 2.0),
+                highlight,
+            );
+            let _ = on_path;
+        }
+        // L1 → L2
+        for i in 0..4 {
+            let parent = i / 2;
+            let highlight = i == YOUR_LEAF / 2;
+            self.draw_edge(
+                &mut frame,
+                (L1_CX[i], L1_CY - BOX_H / 2.0),
+                (L2_CX[parent], L2_CY + BOX_H / 2.0),
+                highlight,
+            );
+        }
+        // L2 → root
+        for i in 0..2 {
+            let highlight = i == YOUR_LEAF / 4;
+            self.draw_edge(
+                &mut frame,
+                (L2_CX[i], L2_CY - BOX_H / 2.0),
+                (ROOT_CX, ROOT_CY + ROOT_H / 2.0),
+                highlight,
+            );
+        }
+
+        // ── Leaves ────────────────────────────────────────────────
+        for i in 0..8 {
+            let kind = if i == YOUR_LEAF {
+                NodeKind::OnPath
+            } else if i == YOUR_LEAF ^ 1 {
+                NodeKind::Sibling
+            } else {
+                NodeKind::Other
+            };
+            let color = self.node_color(kind, false);
+            self.fill_box(&mut frame, LEAF_CX[i], LEAF_CY, BOX_W, BOX_H, color);
+        }
+        // Label your leaf
+        self.caption(
+            &mut frame,
+            "your file",
+            (LEAF_CX[YOUR_LEAF], LEAF_CY + BOX_H / 2.0 + 12.0),
+            10.0,
+            COL_BRAND,
+        );
+        // Tiny "other files…" label under one of the dim leaves
+        self.caption(
+            &mut frame,
+            "other timestamped files in the same bundle",
+            (TREE_W / 2.0, LEAF_CY + BOX_H / 2.0 + 28.0),
+            9.0,
+            COL_INK_3,
+        );
+
+        // ── L1 ────────────────────────────────────────────────────
+        for i in 0..4 {
+            let kind = if i == YOUR_LEAF / 2 {
+                NodeKind::OnPath
+            } else if i == (YOUR_LEAF / 2) ^ 1 {
+                NodeKind::Sibling
+            } else {
+                NodeKind::Other
+            };
+            let color = self.node_color(kind, false);
+            self.fill_box(&mut frame, L1_CX[i], L1_CY, BOX_W, BOX_H, color);
+        }
+
+        // ── L2 ────────────────────────────────────────────────────
+        for i in 0..2 {
+            let kind = if i == YOUR_LEAF / 4 {
+                NodeKind::OnPath
+            } else {
+                NodeKind::Sibling
+            };
+            let color = self.node_color(kind, false);
+            self.fill_box(&mut frame, L2_CX[i], L2_CY, BOX_W, BOX_H, color);
+        }
+
+        // ── Root ──────────────────────────────────────────────────
+        let root_color = self.node_color(NodeKind::OnPath, true);
+        self.fill_box(&mut frame, ROOT_CX, ROOT_CY, ROOT_W, ROOT_H, root_color);
+        self.caption(
+            &mut frame,
+            "merkle root",
+            (ROOT_CX, ROOT_CY - ROOT_H / 2.0 - 10.0),
+            10.0,
+            if self.verified { COL_CONFIRMED } else { COL_BRAND },
+        );
+        self.caption(
+            &mut frame,
+            "this value lives in the Bitcoin block header",
+            (ROOT_CX, ROOT_CY - ROOT_H / 2.0 - 24.0),
+            9.0,
+            COL_INK_3,
+        );
+
+        // ── Mini legend ───────────────────────────────────────────
+        // Three colored dots with their meanings on one row at the bottom.
+        let legend_y = TREE_H - 8.0;
+        let legend_dot_r = 3.5;
+        let legend_spacing = 130.0;
+        let legend_start_x = (TREE_W - legend_spacing * 2.0) / 2.0;
+
+        let legend = [
+            (COL_BRAND, "your file's path"),
+            (COL_NETWORK_MARK, "sibling — from the .ots"),
+            (Color::from_rgb(0.86, 0.86, 0.88), "other files in the bundle"),
+        ];
+        for (i, (dot_color, label)) in legend.iter().enumerate() {
+            let cx = legend_start_x + i as f32 * legend_spacing;
+            let dot = CanvasPath::new(|b| b.circle(IcedPoint::new(cx, legend_y), legend_dot_r));
+            frame.fill(&dot, *dot_color);
+            self.caption(
+                &mut frame,
+                label,
+                (cx + 64.0, legend_y),
+                9.0,
+                COL_INK_3,
+            );
+        }
+
+        vec![frame.into_geometry()]
+    }
+}
+
+fn merkle_tree_canvas<'a>(verified: bool) -> Element<'a, Message> {
+    Canvas::new(MerkleTree { verified })
+        .width(Length::Fixed(TREE_W))
+        .height(Length::Fixed(TREE_H))
+        .into()
+}
+
+/// Render the actual proof-chain walk: a vertical sequence of cards,
+/// Caption that sits just above the merkle-tree canvas — introduces
+/// what the user is looking at in one terse sentence.
+fn tree_intro<'a>() -> Element<'a, Message> {
+    column![
+        text("Your file's hash is one leaf in a tree of timestamped files.")
+            .size(12)
+            .color(COL_INK),
+        text("The .ots records the sibling hashes on the path to the root.")
+            .size(12)
+            .color(COL_INK_2),
+    ]
+    .spacing(2)
     .into()
 }
 
@@ -1130,87 +1292,35 @@ fn ease_out_cubic(t: f32) -> f32 {
 // ── Verification call ──────────────────────────────────────────────
 
 async fn verify_async(file: PathBuf, ots: PathBuf) -> Outcome {
-    let join = tokio::task::spawn_blocking(move || -> Result<(Vec<VerifyResult>, String, Vec<(String, String)>), String> {
+    let join = tokio::task::spawn_blocking(move || -> Result<(Vec<VerifyResult>, String), String> {
         let file_data = std::fs::read(&file).map_err(|e| format!("Read {}: {e}", file.display()))?;
         let ots_data = std::fs::read(&ots).map_err(|e| format!("Read {}: {e}", ots.display()))?;
+        // Hash the file with whatever op the .ots specifies, so the
+        // displayed digest matches the one feeding the proof chain.
         let parsed = zeitstempel::parser::parse_ots(&ots_data)
             .map_err(|e| format!("Parse .ots: {e}"))?;
         let file_hash_bytes = operations::hash_file_contents(&file_data, parsed.hash_op)
             .map_err(|e| format!("Hash file: {e}"))?;
         let file_hash_hex = bytes_to_hex(&file_hash_bytes);
-        // Collect the operation chain leading from the file's hash up to
-        // the first Bitcoin attestation — that becomes the visualized
-        // recipe in the side panel.
-        let proof_steps = collect_proof_walk(&parsed);
         let results = verify::verify_file(&file_data, &ots_data)?;
-        Ok((results, file_hash_hex, proof_steps))
+        Ok((results, file_hash_hex))
     })
     .await;
 
-    let (results, file_hash, proof_steps) = match join {
+    let (results, file_hash) = match join {
         Ok(Ok(r)) => r,
         Ok(Err(e)) => return Outcome::Error { message: e },
         Err(e) => return Outcome::Error { message: format!("worker panicked: {e}") },
     };
 
-    summarize(&results, file_hash, proof_steps)
+    summarize(&results, file_hash)
 }
 
 fn bytes_to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
-/// Walk the timestamp tree from the file's hash up to the first
-/// Bitcoin attestation, recording each operation and the hash it
-/// produces. The returned chain is exactly the recipe a verifier
-/// applies; the last entry's hash is the calculated merkle root.
-fn collect_proof_walk(ots: &OtsFile) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    walk_to_bitcoin(&ots.timestamp, ots.file_digest.clone(), &mut out);
-    out
-}
-
-fn walk_to_bitcoin(
-    ts: &Timestamp,
-    msg: Vec<u8>,
-    out: &mut Vec<(String, String)>,
-) -> bool {
-    for att in &ts.attestations {
-        if matches!(att, Attestation::Bitcoin { .. }) {
-            return true;
-        }
-    }
-    for (op, child) in &ts.ops {
-        let Ok(new_msg) = operations::apply(op, &msg) else {
-            continue;
-        };
-        out.push((format_op(op), bytes_to_hex(&new_msg)));
-        if walk_to_bitcoin(child, new_msg, out) {
-            return true;
-        }
-        out.pop();
-    }
-    false
-}
-
-fn format_op(op: &Operation) -> String {
-    match op {
-        Operation::Append(d) => format!("append {}-byte sibling", d.len()),
-        Operation::Prepend(d) => format!("prepend {}-byte sibling", d.len()),
-        Operation::Sha256 => "SHA-256".to_string(),
-        Operation::Sha1 => "SHA-1".to_string(),
-        Operation::Ripemd160 => "RIPEMD-160".to_string(),
-        Operation::Keccak256 => "Keccak-256".to_string(),
-        Operation::Reverse => "reverse bytes".to_string(),
-        Operation::Hexlify => "hexlify".to_string(),
-    }
-}
-
-fn summarize(
-    results: &[VerifyResult],
-    file_hash: String,
-    proof_steps: Vec<(String, String)>,
-) -> Outcome {
+fn summarize(results: &[VerifyResult], file_hash: String) -> Outcome {
     for r in results {
         if let VerifyResult::BitcoinVerified { height, block_hash, merkle_root, timestamp } = r {
             return Outcome::Verified {
@@ -1220,7 +1330,6 @@ fn summarize(
                 block_hash: block_hash.clone(),
                 merkle_root: merkle_root.clone(),
                 file_hash,
-                proof_steps,
             };
         }
     }

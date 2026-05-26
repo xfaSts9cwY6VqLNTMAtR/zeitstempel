@@ -8,6 +8,6 @@ license = "MIT"
 
 [dependencies]
 zeitstempel = { path = "../core" }
-iced = { version = "0.14", features = ["tokio", "advanced"] }
+iced = { version = "0.14", features = ["tokio", "advanced", "canvas"] }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 webbrowser = "1.0"
