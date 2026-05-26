@@ -42,16 +42,6 @@ const ANIM_DURATION_SECS: f32 = 0.28;
 const ASSUMED_SCREEN_W: f32 = 1920.0;
 
 
-// ── Paced stage durations ──────────────────────────────────────────
-//
-// These artificially slow the visible animation so users can read each
-// step. The local steps (hash, replay, compare) finish in microseconds
-// in reality; the network step has its real duration plus the floor
-// below.
-const STAGE_HASH_MS: u128 = 320;
-const STAGE_REPLAY_MS: u128 = 320;
-const STAGE_COMPARE_MS: u128 = 260;
-
 // ── Palette ────────────────────────────────────────────────────────
 //
 // Editorial-minimal direction: warm off-white paper, hand-set typography
@@ -97,13 +87,15 @@ fn theme(_state: &App) -> Theme {
 struct App {
     file_path: Option<PathBuf>,
     ots_path: Option<PathBuf>,
-    stage: Stage,
-    stage_started: Option<Instant>,
-    pending_outcome: Option<Outcome>,
+    /// A verify task is in flight — the drop-zones row shows a small
+    /// "Verifying…" caption until it lands.
+    verifying: bool,
+    /// The settled outcome, if any. Set once the verify task resolves;
+    /// cleared at the start of a fresh run.
     outcome: Option<Outcome>,
-    // Reveal animation for the result block (0→1 at Stage::Done).
+    /// Reveal animation for the result block: 0→1 when an outcome
+    /// arrives, 1→0 when a fresh run kicks off.
     panel_reveal: f32,
-    now: Option<Instant>,
     last_tick: Option<Instant>,
 
     // The visualization panel is collapsible. Default false: only the
@@ -120,22 +112,6 @@ enum ExpandSide {
     #[default]
     Right,
     Left,
-}
-
-/// Visible position in the verification pipeline.
-///
-/// The animation walks through Hashing → Replaying → Fetching → Comparing
-/// → Done. Fetching is open-ended — it stays active until the real
-/// verify result lands.
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Stage {
-    #[default]
-    Hidden,
-    Hashing,
-    Replaying,
-    Fetching,
-    Comparing,
-    Done,
 }
 
 #[derive(Clone, Debug)]
@@ -166,17 +142,6 @@ enum Outcome {
     Error { message: String },
 }
 
-impl Outcome {
-    /// Did this outcome involve a real network call? If not, the UI
-    /// should skip the Fetching stage rather than mislead the user.
-    fn touched_network(&self) -> bool {
-        matches!(
-            self,
-            Outcome::Verified { .. } | Outcome::Failed { .. } | Outcome::Pending { .. }
-        )
-    }
-}
-
 #[derive(Debug, Clone)]
 enum Message {
     FileDropped(PathBuf),
@@ -197,7 +162,8 @@ impl App {
                 Task::none()
             }
             Message::VerifyDone(outcome) => {
-                self.pending_outcome = Some(outcome);
+                self.verifying = false;
+                self.outcome = Some(outcome);
                 Task::none()
             }
             Message::ToggleExpand => self.on_toggle_expand(),
@@ -275,77 +241,27 @@ impl App {
         }
 
         if let (Some(file), Some(ots)) = (self.file_path.clone(), self.ots_path.clone()) {
-            // Begin a fresh run — even if a prior run already settled.
-            self.stage = Stage::Hashing;
-            let now = Instant::now();
-            self.stage_started = Some(now);
-            self.now = Some(now);
-            self.last_tick = Some(now);
-            self.pending_outcome = None;
+            // Begin a fresh run — clear any prior outcome and kick off
+            // the worker. The panel collapses while the run is in flight
+            // and re-opens once it settles.
+            self.verifying = true;
             self.outcome = None;
+            self.last_tick = Some(Instant::now());
             return Task::perform(verify_async(file, ots), Message::VerifyDone);
         }
 
         Task::none()
     }
 
-    /// Single tick — advance stage transitions and the reveal animation.
+    /// Tick the result-panel reveal animation. Driven only while the
+    /// reveal is in flight (not while verifying — the running task
+    /// holds that state by itself).
     fn step(&mut self, now: Instant) {
-        self.now = Some(now);
-        self.advance_stage(now);
-
-        let panel_target = match self.stage {
-            Stage::Done => 1.0,
-            _ => 0.0,
-        };
-
+        let panel_target = if self.outcome.is_some() { 1.0 } else { 0.0 };
         let dt = now.duration_since(self.last_tick.unwrap_or(now)).as_secs_f32();
         let speed = 1.0 / ANIM_DURATION_SECS;
         self.panel_reveal = step_toward(self.panel_reveal, panel_target, dt * speed);
         self.last_tick = Some(now);
-    }
-
-    fn advance_stage(&mut self, now: Instant) {
-        let elapsed = self
-            .stage_started
-            .map(|t| now.duration_since(t).as_millis())
-            .unwrap_or(0);
-
-        // If a result arrived while we're still in the pre-network
-        // stages and the outcome never actually touched the network
-        // (e.g. digest mismatch fast-fails), skip ahead so the UI
-        // doesn't claim a Fetching step that never happened.
-        if matches!(self.stage, Stage::Hashing | Stage::Replaying)
-            && self
-                .pending_outcome
-                .as_ref()
-                .is_some_and(|o| !o.touched_network())
-        {
-            self.stage = Stage::Comparing;
-            self.stage_started = Some(now);
-            return;
-        }
-
-        match self.stage {
-            Stage::Hashing if elapsed >= STAGE_HASH_MS => {
-                self.stage = Stage::Replaying;
-                self.stage_started = Some(now);
-            }
-            Stage::Replaying if elapsed >= STAGE_REPLAY_MS => {
-                self.stage = Stage::Fetching;
-                self.stage_started = Some(now);
-            }
-            Stage::Fetching if self.pending_outcome.is_some() => {
-                self.stage = Stage::Comparing;
-                self.stage_started = Some(now);
-            }
-            Stage::Comparing if elapsed >= STAGE_COMPARE_MS => {
-                self.stage = Stage::Done;
-                self.stage_started = None;
-                self.outcome = self.pending_outcome.take();
-            }
-            _ => {}
-        }
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -362,11 +278,8 @@ impl App {
             _ => None,
         });
 
-        let panel_target = if matches!(self.stage, Stage::Done) { 1.0 } else { 0.0 };
-        let reveal_animating = (self.panel_reveal - panel_target).abs() > 0.001;
-        let stage_animating = !matches!(self.stage, Stage::Hidden | Stage::Done);
-
-        if reveal_animating || stage_animating {
+        let panel_target = if self.outcome.is_some() { 1.0 } else { 0.0 };
+        if (self.panel_reveal - panel_target).abs() > 0.001 {
             Subscription::batch([
                 window_events,
                 iced::time::every(Duration::from_millis(16)).map(Message::Tick),
@@ -425,13 +338,14 @@ impl App {
             .height(Length::Fixed(panel_eased * 170.0))
             .clip(true);
 
-        let toggle = toggle_button(self.expanded, self.expand_side, self.stage);
-
-        let footer_alpha = if matches!(self.stage, Stage::Hidden) { 0.0 } else { 1.0 };
+        let has_run = self.verifying || self.outcome.is_some();
+        let toggle = toggle_button(self.expanded, self.expand_side, has_run);
+        let footer_alpha = if has_run { 1.0 } else { 0.0 };
 
         column![
             header(),
             zones,
+            verifying_indicator(self.verifying),
             result,
             toggle,
             Space::new().height(Length::Fill), // pushes footer to bottom
@@ -672,7 +586,7 @@ impl App {
     // ── Result panel ────────────────────────────────────────────────
 
     fn result_view(&self) -> Element<'_, Message> {
-        if !matches!(self.stage, Stage::Done) {
+        if self.outcome.is_none() {
             return Space::new().into();
         }
         let body: Element<'_, Message> = match self.outcome.as_ref() {
@@ -1034,6 +948,23 @@ fn pretty_duration(blocks: u64) -> String {
 
 // ── Static UI pieces ───────────────────────────────────────────────
 
+/// Tiny in-flight indicator shown directly under the drop zones.
+/// Used to bridge the moment between dropping the files and the
+/// outcome panel appearing.
+fn verifying_indicator<'a>(active: bool) -> Element<'a, Message> {
+    if !active {
+        return Space::new().into();
+    }
+    container(
+        text("Verifying against blockstream.info…")
+            .size(12)
+            .color(COL_BRAND),
+    )
+    .width(Length::Fill)
+    .align_x(iced::alignment::Horizontal::Center)
+    .into()
+}
+
 /// Toggle that opens/closes the verification-steps side panel.
 ///
 /// Stays disabled until we actually have something to show — there's
@@ -1041,9 +972,8 @@ fn pretty_duration(blocks: u64) -> String {
 fn toggle_button<'a>(
     expanded: bool,
     side: ExpandSide,
-    stage: Stage,
+    has_content: bool,
 ) -> Element<'a, Message> {
-    let has_content = !matches!(stage, Stage::Hidden);
     let (chevron, label) = match (expanded, side) {
         (false, _) => ("▸", "Show verification steps"),
         (true, ExpandSide::Right) => ("◂", "Hide verification steps"),
