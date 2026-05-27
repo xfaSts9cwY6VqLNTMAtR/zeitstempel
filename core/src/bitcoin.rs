@@ -120,6 +120,23 @@ fn http_get_text(url: &str) -> Result<String, ApiError> {
         .map_err(|e| ApiError::Http(format!("reading response from {}: {}", url, e)))
 }
 
+/// Fetch the current Bitcoin tip height — the height of the most
+/// recently mined block. Combined with an anchored block's height
+/// this gives an exact confirmation count, not a wall-clock estimate.
+pub fn get_tip_height() -> Result<u64, ApiError> {
+    get_tip_height_from("https://blockstream.info/api")
+        .or_else(|_| get_tip_height_from("https://mempool.space/api"))
+}
+
+fn get_tip_height_from(base_url: &str) -> Result<u64, ApiError> {
+    let url = format!("{}/blocks/tip/height", base_url);
+    let body = http_get_text(&url)?;
+    body.trim()
+        .parse::<u64>()
+        .map_err(|e| ApiError::Parse(format!("bad tip-height response: {}", e)))
+}
+
+
 /// Convert a hex merkle root (big-endian display order from API) to
 /// little-endian bytes (which is what the OTS proof chain produces).
 ///
