@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use iced::widget::{Space, button, column, container, row, text};
+use iced::widget::{Space, button, column, container, row, scrollable, text};
 use iced::{
     Border, Color, Element, Font, Length, Subscription, Task, Theme,
     event::{self, Event},
@@ -25,11 +25,13 @@ use zeitstempel::verify::{self, VerifyResult};
 
 // ── Window sizes per state ────────────────────────────────────────
 const WINDOW_W: f32 = 480.0;
+const WINDOW_W_BULK: f32 = 620.0;
 const WINDOW_H_EMPTY: f32 = 400.0;
 const WINDOW_H_VERIFYING: f32 = 400.0;
 const WINDOW_H_VERIFIED: f32 = 780.0;
 const WINDOW_H_FAILED: f32 = 520.0;
 const WINDOW_H_OTHER: f32 = 460.0;
+const WINDOW_H_BULK: f32 = 620.0;
 const ANIM_DURATION_SECS: f32 = 0.28;
 
 // ── Palette ───────────────────────────────────────────────────────
@@ -114,6 +116,7 @@ fn theme(_state: &App) -> Theme {
 
 #[derive(Default)]
 struct App {
+    mode: Mode,
     file_path: Option<PathBuf>,
     ots_path: Option<PathBuf>,
     verifying: bool,
@@ -127,6 +130,57 @@ struct App {
     reveal: f32,
     /// Captured at first WindowOpened so we can issue resize tasks.
     window_id: Option<window::Id>,
+    /// Bulk-mode state — folder, pairs, results.
+    bulk: BulkState,
+}
+
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+enum Mode {
+    #[default]
+    Single,
+    Bulk,
+}
+
+#[derive(Default, Clone, Debug)]
+struct BulkState {
+    folder: Option<PathBuf>,
+    pairs: Vec<BulkPair>,
+}
+
+#[derive(Clone, Debug)]
+struct BulkPair {
+    file_path: PathBuf,
+    ots_path: PathBuf,
+    status: BulkPairStatus,
+}
+
+#[derive(Clone, Debug)]
+enum BulkPairStatus {
+    /// Verify task in flight.
+    Verifying,
+    /// Anchored to Bitcoin successfully.
+    Verified(BulkVerifiedSummary),
+    /// SHA of file doesn't match the .ots's recorded digest.
+    Mismatch,
+    /// Proof is valid but not yet anchored to Bitcoin.
+    Awaiting,
+    /// Other failure (parse, network, etc.).
+    Error(String),
+}
+
+/// Kept rich for now even though the bulk PDF only consumes a subset
+/// today — a future per-entry detail page will want everything.
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+struct BulkVerifiedSummary {
+    block: u64,
+    when: String,
+    block_hash: String,
+    merkle_root: String,
+    file_hash: String,
+    path_depth: usize,
+    confirmations: u64,
+    confirmations_exact: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -167,6 +221,12 @@ enum Message {
     ExportPdf,
     ExportPdfDone(Result<PathBuf, String>),
     WindowOpened(window::Id),
+    EnterBulk,
+    ExitBulk,
+    BulkFolderScanned(PathBuf, Vec<(PathBuf, PathBuf)>),
+    BulkVerifyDone(usize, BulkPairStatus),
+    BulkExportPdf,
+    BulkExportPdfDone(Result<PathBuf, String>),
 }
 
 #[derive(Clone, Debug)]
@@ -185,7 +245,10 @@ struct VerifiedPayload {
 impl App {
     fn update(&mut self, msg: Message) -> Task<Message> {
         match msg {
-            Message::FileDropped(path) => self.on_file_dropped(path),
+            Message::FileDropped(path) => match self.mode {
+                Mode::Single => self.on_file_dropped(path),
+                Mode::Bulk => self.on_bulk_path_dropped(path),
+            },
             Message::Tick(now) => {
                 self.step(now);
                 Task::none()
@@ -217,8 +280,6 @@ impl App {
             }
             Message::ExportPdfDone(result) => {
                 if let Ok(path) = result {
-                    // Open the saved file in the system viewer so the
-                    // user can confirm the result immediately.
                     let url = format!("file://{}", path.display());
                     let _ = webbrowser::open(&url);
                 }
@@ -228,7 +289,88 @@ impl App {
                 self.window_id = Some(id);
                 Task::none()
             }
+            Message::EnterBulk => {
+                self.mode = Mode::Bulk;
+                self.bulk = BulkState::default();
+                self.resize_to_state()
+            }
+            Message::ExitBulk => {
+                self.mode = Mode::Single;
+                self.bulk = BulkState::default();
+                self.resize_to_state()
+            }
+            Message::BulkFolderScanned(folder, pairs) => {
+                self.bulk.folder = Some(folder);
+                self.bulk.pairs = pairs
+                    .into_iter()
+                    .map(|(file_path, ots_path)| BulkPair {
+                        file_path,
+                        ots_path,
+                        status: BulkPairStatus::Verifying,
+                    })
+                    .collect();
+                // Kick off a verify task per pair. They run in parallel
+                // up to the tokio worker pool's limit.
+                let tasks: Vec<Task<Message>> = self
+                    .bulk
+                    .pairs
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, p)| {
+                        let file = p.file_path.clone();
+                        let ots = p.ots_path.clone();
+                        Task::perform(verify_bulk_pair_async(idx, file, ots), |(i, s)| {
+                            Message::BulkVerifyDone(i, s)
+                        })
+                    })
+                    .collect();
+                Task::batch(tasks)
+            }
+            Message::BulkVerifyDone(idx, status) => {
+                if let Some(pair) = self.bulk.pairs.get_mut(idx) {
+                    pair.status = status;
+                }
+                Task::none()
+            }
+            Message::BulkExportPdf => {
+                let entries: Vec<BulkExportEntry> = self
+                    .bulk
+                    .pairs
+                    .iter()
+                    .map(|p| BulkExportEntry {
+                        filename: path_filename(Some(&p.file_path))
+                            .unwrap_or("file")
+                            .to_string(),
+                        status: p.status.clone(),
+                    })
+                    .collect();
+                if entries.is_empty() {
+                    return Task::none();
+                }
+                Task::perform(export_bulk_pdf_async(entries), Message::BulkExportPdfDone)
+            }
+            Message::BulkExportPdfDone(result) => {
+                if let Ok(path) = result {
+                    let url = format!("file://{}", path.display());
+                    let _ = webbrowser::open(&url);
+                }
+                Task::none()
+            }
         }
+    }
+
+    fn on_bulk_path_dropped(&mut self, path: PathBuf) -> Task<Message> {
+        // Resolve to a directory: if a file was dropped, use its parent.
+        let folder = if path.is_dir() {
+            path
+        } else if let Some(parent) = path.parent() {
+            parent.to_path_buf()
+        } else {
+            return Task::none();
+        };
+        Task::perform(scan_folder_async(folder), |(folder, pairs)| {
+            Message::BulkFolderScanned(folder, pairs)
+        })
     }
 
     fn verified_payload(&self) -> Option<VerifiedPayload> {
@@ -315,19 +457,25 @@ impl App {
         let Some(id) = self.window_id else {
             return Task::none();
         };
-        let h = self.target_height();
-        window::resize(id, iced::Size::new(WINDOW_W, h))
+        let (w, h) = self.target_size();
+        window::resize(id, iced::Size::new(w, h))
     }
 
-    fn target_height(&self) -> f32 {
-        if self.verifying {
-            WINDOW_H_VERIFYING
-        } else {
-            match self.outcome.as_ref() {
-                None => WINDOW_H_EMPTY,
-                Some(Outcome::Verified { .. }) => WINDOW_H_VERIFIED,
-                Some(Outcome::Mismatch { .. }) => WINDOW_H_FAILED,
-                Some(_) => WINDOW_H_OTHER,
+    fn target_size(&self) -> (f32, f32) {
+        match self.mode {
+            Mode::Bulk => (WINDOW_W_BULK, WINDOW_H_BULK),
+            Mode::Single => {
+                let h = if self.verifying {
+                    WINDOW_H_VERIFYING
+                } else {
+                    match self.outcome.as_ref() {
+                        None => WINDOW_H_EMPTY,
+                        Some(Outcome::Verified { .. }) => WINDOW_H_VERIFIED,
+                        Some(Outcome::Mismatch { .. }) => WINDOW_H_FAILED,
+                        Some(_) => WINDOW_H_OTHER,
+                    }
+                };
+                (WINDOW_W, h)
             }
         }
     }
@@ -335,22 +483,29 @@ impl App {
     // ── View ────────────────────────────────────────────────────────
 
     fn view(&self) -> Element<'_, Message> {
-        let body: Element<'_, Message> = if self.verifying {
-            self.view_verifying()
-        } else {
-            match self.outcome.as_ref() {
-                None => self.view_empty(),
-                Some(Outcome::Verified { .. }) => self.view_verified(),
-                Some(Outcome::Mismatch { .. }) => self.view_mismatch(),
-                Some(Outcome::Pending { host }) => self.view_simple(
-                    "Pending.",
-                    COL_INK_2,
-                    format!("Calendar {host} hasn't anchored to Bitcoin yet."),
-                ),
-                Some(Outcome::Skipped { reason }) => {
-                    self.view_simple("Skipped.", COL_INK_3, reason.clone())
+        let body: Element<'_, Message> = match self.mode {
+            Mode::Bulk => self.view_bulk(),
+            Mode::Single => {
+                if self.verifying {
+                    self.view_verifying()
+                } else {
+                    match self.outcome.as_ref() {
+                        None => self.view_empty(),
+                        Some(Outcome::Verified { .. }) => self.view_verified(),
+                        Some(Outcome::Mismatch { .. }) => self.view_mismatch(),
+                        Some(Outcome::Pending { host }) => self.view_simple(
+                            "Pending.",
+                            COL_INK_2,
+                            format!("Calendar {host} hasn't anchored to Bitcoin yet."),
+                        ),
+                        Some(Outcome::Skipped { reason }) => {
+                            self.view_simple("Skipped.", COL_INK_3, reason.clone())
+                        }
+                        Some(Outcome::Error { message }) => {
+                            self.view_simple("Error.", COL_FAILED, message.clone())
+                        }
+                    }
                 }
-                Some(Outcome::Error { message }) => self.view_simple("Error.", COL_FAILED, message.clone()),
             }
         };
 
@@ -373,6 +528,8 @@ impl App {
             drop_zones(self.file_path.as_deref(), self.ots_path.as_deref()),
             Space::new().height(Length::Fill),
             footer_note(),
+            Space::new().height(Length::Fixed(6.0)),
+            bulk_entry_link(),
         ]
         .spacing(0)
         .into()
@@ -449,6 +606,8 @@ impl App {
 
             Space::new().height(Length::Fixed(20.0)),
             footer_note(),
+            Space::new().height(Length::Fixed(6.0)),
+            bulk_entry_link(),
         ]
         .spacing(0)
         .into()
@@ -507,6 +666,106 @@ impl App {
                 .align_y(iced::Alignment::Center),
             Space::new().height(Length::Fill),
             footer_note(),
+        ]
+        .spacing(0)
+        .into()
+    }
+
+    fn view_bulk(&self) -> Element<'_, Message> {
+        let drop_hint = container(
+            row![
+                text("\u{2193}")
+                    .size(22.0)
+                    .color(COL_INK_3)
+                    .font(newsreader(Weight::Medium, true)),
+                Space::new().width(Length::Fixed(12.0)),
+                text("Drop a folder of files and their .ots proofs.")
+                    .size(13.0)
+                    .color(COL_INK_2)
+                    .font(dm_sans(Weight::Normal)),
+            ]
+            .align_y(iced::Alignment::Center),
+        )
+        .width(Length::Fill)
+        .height(Length::Fixed(82.0))
+        .center_x(Length::Fill)
+        .center_y(Length::Fill)
+        .style(|_| container::Style {
+            border: Border {
+                color: COL_HAIRLINE_2,
+                width: 1.5,
+                radius: 8.0.into(),
+            },
+            background: Some(iced::Background::Color(Color::from_rgba(1.0, 1.0, 1.0, 0.55))),
+            ..Default::default()
+        });
+
+        let pairs_list: Element<'_, Message> = if self.bulk.pairs.is_empty() {
+            container(
+                text("No pairs scanned yet.")
+                    .size(12.0)
+                    .color(COL_INK_3)
+                    .font(newsreader(Weight::Normal, true)),
+            )
+            .width(Length::Fill)
+            .padding([24, 0])
+            .align_x(iced::alignment::Horizontal::Center)
+            .into()
+        } else {
+            let rows = self
+                .bulk
+                .pairs
+                .iter()
+                .map(|p| bulk_row(p))
+                .collect::<Vec<_>>();
+            scrollable(
+                column(rows)
+                    .spacing(0)
+                    .width(Length::Fill),
+            )
+            .height(Length::Fill)
+            .into()
+        };
+
+        let counts = bulk_counts(&self.bulk.pairs);
+        let any_verified = self
+            .bulk
+            .pairs
+            .iter()
+            .any(|p| matches!(p.status, BulkPairStatus::Verified(_)));
+
+        let mut bottom = row![counts]
+            .spacing(8)
+            .align_y(iced::Alignment::Center);
+        bottom = bottom.push(Space::new().width(Length::Fill));
+        bottom = bottom.push(action_btn("Back", Message::ExitBulk));
+        if any_verified {
+            bottom = bottom.push(primary_btn(
+                "Export combined PDF",
+                Message::BulkExportPdf,
+            ));
+        }
+
+        column![
+            drop_hint,
+            Space::new().height(Length::Fixed(14.0)),
+            container(Space::new())
+                .width(Length::Fill)
+                .height(Length::Fixed(1.0))
+                .style(|_| container::Style {
+                    background: Some(iced::Background::Color(COL_HAIRLINE)),
+                    ..Default::default()
+                }),
+            pairs_list,
+            container(Space::new())
+                .width(Length::Fill)
+                .height(Length::Fixed(1.0))
+                .style(|_| container::Style {
+                    background: Some(iced::Background::Color(COL_HAIRLINE)),
+                    ..Default::default()
+                }),
+            Space::new().height(Length::Fixed(14.0)),
+            bottom,
         ]
         .spacing(0)
         .into()
@@ -1153,6 +1412,265 @@ fn summarize(bundle: &VerifyBundle, tip_height: Option<u64>) -> Outcome {
     Outcome::Error { message: "proof contains no attestations".into() }
 }
 
+// ── Bulk helpers ──────────────────────────────────────────────────
+
+fn bulk_entry_link<'a>() -> Element<'a, Message> {
+    container(
+        button(
+            text("Switch to bulk verification \u{2197}")
+                .size(11.0)
+                .color(COL_INK_3)
+                .font(dm_sans(Weight::Normal)),
+        )
+        .padding([2, 4])
+        .on_press(Message::EnterBulk)
+        .style(|_, status| {
+            use iced::widget::button;
+            let bg = match status {
+                button::Status::Hovered => Color::from_rgba(0.0, 0.0, 0.0, 0.04),
+                _ => Color::TRANSPARENT,
+            };
+            button::Style {
+                background: Some(iced::Background::Color(bg)),
+                text_color: COL_INK_3,
+                border: Border {
+                    color: Color::TRANSPARENT,
+                    width: 0.0,
+                    radius: 2.0.into(),
+                },
+                ..Default::default()
+            }
+        }),
+    )
+    .width(Length::Fill)
+    .align_x(iced::alignment::Horizontal::Center)
+    .into()
+}
+
+fn bulk_row(p: &BulkPair) -> Element<'_, Message> {
+    let name = path_filename(Some(&p.file_path))
+        .unwrap_or("(?)")
+        .to_string();
+    let (status_text, status_color) = match &p.status {
+        BulkPairStatus::Verifying => ("verifying…".to_string(), COL_INK_3),
+        BulkPairStatus::Verified(_) => ("verified".to_string(), COL_VERIFIED),
+        BulkPairStatus::Mismatch => ("mismatch".to_string(), COL_FAILED),
+        BulkPairStatus::Awaiting => ("awaiting chain".to_string(), COL_INK_2),
+        BulkPairStatus::Error(msg) => {
+            // Surface a short prefix of the error in the status cell
+            // so the user gets at least a hint of what went wrong.
+            let short: String = msg.chars().take(40).collect();
+            (format!("error: {short}"), COL_FAILED)
+        }
+    };
+    let block_text = match &p.status {
+        BulkPairStatus::Verified(s) => format!("#{}", s.block),
+        _ => "—".to_string(),
+    };
+    let date_text = match &p.status {
+        BulkPairStatus::Verified(s) => {
+            // s.when is "YYYY-MM-DD HH:MM:SS UTC"; show just the date.
+            s.when
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .to_string()
+        }
+        _ => "—".to_string(),
+    };
+
+    container(
+        row![
+            container(
+                text(name)
+                    .size(T_MONO)
+                    .color(COL_INK)
+                    .font(jetbrains()),
+            )
+            .width(Length::FillPortion(3)),
+            container(
+                text(status_text)
+                    .size(11.5)
+                    .color(status_color)
+                    .font(if matches!(p.status, BulkPairStatus::Verifying) {
+                        newsreader(Weight::Normal, true)
+                    } else {
+                        dm_sans(Weight::Medium)
+                    }),
+            )
+            .width(Length::Fixed(110.0))
+            .align_x(iced::alignment::Horizontal::Center),
+            container(
+                text(block_text)
+                    .size(11.0)
+                    .color(COL_INK_2)
+                    .font(jetbrains()),
+            )
+            .width(Length::Fixed(90.0))
+            .align_x(iced::alignment::Horizontal::Right),
+            container(
+                text(date_text)
+                    .size(11.0)
+                    .color(COL_INK_3)
+                    .font(dm_sans(Weight::Normal)),
+            )
+            .width(Length::Fixed(100.0))
+            .align_x(iced::alignment::Horizontal::Right),
+        ]
+        .spacing(14)
+        .align_y(iced::Alignment::Center),
+    )
+    .padding([11, 6])
+    .width(Length::Fill)
+    .style(|_| container::Style {
+        border: Border {
+            color: COL_HAIRLINE,
+            width: 0.0,
+            radius: 0.0.into(),
+        },
+        background: None,
+        ..Default::default()
+    })
+    .into()
+}
+
+fn bulk_counts<'a>(pairs: &[BulkPair]) -> Element<'a, Message> {
+    let mut verified = 0u32;
+    let mut mismatch = 0u32;
+    let mut awaiting = 0u32;
+    let mut errored = 0u32;
+    let mut in_flight = 0u32;
+    for p in pairs {
+        match &p.status {
+            BulkPairStatus::Verified(_) => verified += 1,
+            BulkPairStatus::Mismatch => mismatch += 1,
+            BulkPairStatus::Awaiting => awaiting += 1,
+            BulkPairStatus::Error(_) => errored += 1,
+            BulkPairStatus::Verifying => in_flight += 1,
+        }
+    }
+    let mut parts: Vec<String> = Vec::new();
+    if verified > 0 {
+        parts.push(format!("{verified} verified"));
+    }
+    if mismatch > 0 {
+        parts.push(format!("{mismatch} mismatched"));
+    }
+    if awaiting > 0 {
+        parts.push(format!("{awaiting} awaiting"));
+    }
+    if errored > 0 {
+        parts.push(format!("{errored} errored"));
+    }
+    if in_flight > 0 {
+        parts.push(format!("{in_flight} in progress"));
+    }
+    let line = if parts.is_empty() {
+        "—".to_string()
+    } else {
+        parts.join("  ·  ")
+    };
+    text(line)
+        .size(12.0)
+        .color(COL_INK_2)
+        .font(dm_sans(Weight::Normal))
+        .into()
+}
+
+fn primary_btn<'a>(label: &'a str, msg: Message) -> Element<'a, Message> {
+    button(
+        text(label.to_string())
+            .size(12.0)
+            .color(COL_PAPER)
+            .font(dm_sans(Weight::Medium)),
+    )
+    .padding([7, 14])
+    .on_press(msg)
+    .style(|_, status| {
+        use iced::widget::button;
+        let bg = match status {
+            button::Status::Hovered => COL_INK_2,
+            _ => COL_INK,
+        };
+        button::Style {
+            background: Some(iced::Background::Color(bg)),
+            text_color: COL_PAPER,
+            border: Border {
+                color: bg,
+                width: 1.0,
+                radius: 5.0.into(),
+            },
+            ..Default::default()
+        }
+    })
+    .into()
+}
+
+// ── Folder scan + bulk verify ─────────────────────────────────────
+
+async fn scan_folder_async(folder: PathBuf) -> (PathBuf, Vec<(PathBuf, PathBuf)>) {
+    let folder_for_task = folder.clone();
+    let pairs = tokio::task::spawn_blocking(move || scan_folder(&folder_for_task))
+        .await
+        .unwrap_or_default();
+    (folder, pairs)
+}
+
+fn scan_folder(folder: &Path) -> Vec<(PathBuf, PathBuf)> {
+    let Ok(entries) = std::fs::read_dir(folder) else {
+        return Vec::new();
+    };
+    let mut pairs = Vec::new();
+    for entry in entries.flatten() {
+        let ots = entry.path();
+        if ots.extension().and_then(|e| e.to_str()) != Some("ots") {
+            continue;
+        }
+        // Drop the .ots extension to find the matching file. We use
+        // `with_extension("")` then check existence.
+        let file = ots.with_extension("");
+        if file.exists() && file.is_file() {
+            pairs.push((file, ots));
+        }
+    }
+    pairs.sort_by(|a, b| a.0.cmp(&b.0));
+    pairs
+}
+
+async fn verify_bulk_pair_async(
+    idx: usize,
+    file: PathBuf,
+    ots: PathBuf,
+) -> (usize, BulkPairStatus) {
+    let outcome = verify_async(file, ots).await;
+    let status = match outcome {
+        Outcome::Verified {
+            block,
+            when,
+            block_hash,
+            merkle_root,
+            file_hash,
+            path_depth,
+            confirmations,
+            confirmations_exact,
+        } => BulkPairStatus::Verified(BulkVerifiedSummary {
+            block,
+            when,
+            block_hash,
+            merkle_root,
+            file_hash,
+            path_depth,
+            confirmations,
+            confirmations_exact,
+        }),
+        Outcome::Mismatch { .. } => BulkPairStatus::Mismatch,
+        Outcome::Pending { .. } => BulkPairStatus::Awaiting,
+        Outcome::Skipped { reason } => BulkPairStatus::Error(reason),
+        Outcome::Error { message } => BulkPairStatus::Error(message),
+    };
+    (idx, status)
+}
+
 // ── PDF export ────────────────────────────────────────────────────
 //
 // Generates a one-page A4 verification certificate. Uses built-in
@@ -1424,4 +1942,217 @@ fn draw_hairline(
         is_closed: false,
     };
     layer.add_line(line);
+}
+
+// ── Bulk PDF export ───────────────────────────────────────────────
+
+#[derive(Clone, Debug)]
+struct BulkExportEntry {
+    filename: String,
+    status: BulkPairStatus,
+}
+
+async fn export_bulk_pdf_async(entries: Vec<BulkExportEntry>) -> Result<PathBuf, String> {
+    tokio::task::spawn_blocking(move || -> Result<PathBuf, String> {
+        let path = rfd::FileDialog::new()
+            .set_file_name("bulk-verification.pdf")
+            .add_filter("PDF", &["pdf"])
+            .save_file()
+            .ok_or_else(|| "cancelled".to_string())?;
+        write_bulk_pdf(&entries, &path)?;
+        Ok(path)
+    })
+    .await
+    .map_err(|e| format!("worker panicked: {e}"))?
+}
+
+fn write_bulk_pdf(entries: &[BulkExportEntry], path: &Path) -> Result<(), String> {
+    use printpdf::{BuiltinFont, Color, Mm, PdfDocument, Rgb};
+    use std::io::BufWriter;
+
+    let (doc, page, layer) = PdfDocument::new(
+        "OpenTimestamps Bulk Verification",
+        Mm(210.0),
+        Mm(297.0),
+        "Layer 1",
+    );
+    let l = doc.get_page(page).get_layer(layer);
+
+    let _serif = doc
+        .add_builtin_font(BuiltinFont::TimesRoman)
+        .map_err(|e| format!("{e}"))?;
+    let serif_italic = doc
+        .add_builtin_font(BuiltinFont::TimesItalic)
+        .map_err(|e| format!("{e}"))?;
+    let serif_bold = doc
+        .add_builtin_font(BuiltinFont::TimesBold)
+        .map_err(|e| format!("{e}"))?;
+    let sans = doc
+        .add_builtin_font(BuiltinFont::Helvetica)
+        .map_err(|e| format!("{e}"))?;
+    let mono = doc
+        .add_builtin_font(BuiltinFont::Courier)
+        .map_err(|e| format!("{e}"))?;
+
+    let page_w = 210.0_f32;
+    let margin = 22.0_f32;
+    let mut y = 297.0_f32 - 26.0;
+
+    let ink = || Color::Rgb(Rgb::new(0.10, 0.09, 0.09, None));
+    let ink2 = || Color::Rgb(Rgb::new(0.36, 0.34, 0.32, None));
+    let ink3 = || Color::Rgb(Rgb::new(0.55, 0.53, 0.51, None));
+    let verified_col = || Color::Rgb(Rgb::new(0.165, 0.482, 0.278, None));
+    let failed_col = || Color::Rgb(Rgb::new(0.659, 0.196, 0.196, None));
+    let hairline = || Color::Rgb(Rgb::new(0.81, 0.80, 0.77, None));
+
+    // ── Header ────────────────────────────────────────────────
+    l.set_fill_color(ink2());
+    l.use_text(
+        "zeitstempel — bulk verification",
+        11.0,
+        Mm(margin),
+        Mm(y),
+        &serif_italic,
+    );
+    y -= 6.0;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    l.set_fill_color(ink3());
+    l.use_text(
+        format!("Generated {}", format_unix_utc(now)),
+        9.0,
+        Mm(margin),
+        Mm(y),
+        &sans,
+    );
+    y -= 20.0;
+
+    // ── Summary headline ─────────────────────────────────────
+    let verified = entries
+        .iter()
+        .filter(|e| matches!(e.status, BulkPairStatus::Verified(_)))
+        .count();
+    let mismatch = entries
+        .iter()
+        .filter(|e| matches!(e.status, BulkPairStatus::Mismatch))
+        .count();
+    let other = entries.len().saturating_sub(verified + mismatch);
+
+    l.set_fill_color(verified_col());
+    l.use_text(
+        format!("{verified}/{total} VERIFIED.", total = entries.len()),
+        26.0,
+        Mm(margin),
+        Mm(y),
+        &serif_bold,
+    );
+    y -= 9.0;
+    l.set_fill_color(ink());
+    let mut sub_parts: Vec<String> = Vec::new();
+    if mismatch > 0 {
+        sub_parts.push(format!("{mismatch} mismatched"));
+    }
+    if other > 0 {
+        sub_parts.push(format!("{other} other"));
+    }
+    if !sub_parts.is_empty() {
+        l.set_fill_color(ink3());
+        l.use_text(
+            sub_parts.join(" · "),
+            10.0,
+            Mm(margin),
+            Mm(y),
+            &serif_italic,
+        );
+        y -= 8.0;
+    }
+    y -= 6.0;
+
+    draw_hairline(&l, margin, page_w - margin, y, &hairline());
+    y -= 6.0;
+
+    // ── Table header ──────────────────────────────────────────
+    l.set_fill_color(ink3());
+    l.use_text("FILE", 8.5, Mm(margin), Mm(y), &sans);
+    l.use_text("STATUS", 8.5, Mm(margin + 70.0), Mm(y), &sans);
+    l.use_text("BLOCK", 8.5, Mm(margin + 100.0), Mm(y), &sans);
+    l.use_text("MINED", 8.5, Mm(margin + 122.0), Mm(y), &sans);
+    l.use_text("MERKLE", 8.5, Mm(margin + 150.0), Mm(y), &sans);
+    y -= 3.0;
+    draw_hairline(&l, margin, page_w - margin, y, &hairline());
+    y -= 6.0;
+
+    // ── Rows ───────────────────────────────────────────────────
+    for entry in entries {
+        if y < 30.0 {
+            // Reached the bottom — leave the rest for an enhancement
+            // pass that paginates onto a second page. For typical
+            // batches (≤ ~40 entries) one A4 page is enough.
+            break;
+        }
+
+        l.set_fill_color(ink());
+        let name = truncate_filename(&entry.filename, 30);
+        l.use_text(&name, 9.0, Mm(margin), Mm(y), &mono);
+
+        let (label, label_col) = match &entry.status {
+            BulkPairStatus::Verified(_) => ("verified", verified_col()),
+            BulkPairStatus::Mismatch => ("mismatch", failed_col()),
+            BulkPairStatus::Awaiting => ("awaiting", ink2()),
+            BulkPairStatus::Error(_) => ("error", failed_col()),
+            BulkPairStatus::Verifying => ("—", ink3()),
+        };
+        l.set_fill_color(label_col);
+        l.use_text(label, 9.0, Mm(margin + 70.0), Mm(y), &serif_italic);
+
+        if let BulkPairStatus::Verified(s) = &entry.status {
+            l.set_fill_color(ink2());
+            l.use_text(
+                format!("#{}", s.block),
+                9.0,
+                Mm(margin + 100.0),
+                Mm(y),
+                &mono,
+            );
+            let date = s.when.split_whitespace().next().unwrap_or("");
+            l.use_text(date, 9.0, Mm(margin + 122.0), Mm(y), &sans);
+            let mr_short = if s.merkle_root.len() > 12 {
+                format!(
+                    "{}…{}",
+                    &s.merkle_root[..6],
+                    &s.merkle_root[s.merkle_root.len() - 4..]
+                )
+            } else {
+                s.merkle_root.clone()
+            };
+            l.use_text(mr_short, 8.5, Mm(margin + 150.0), Mm(y), &mono);
+        }
+        y -= 5.5;
+    }
+
+    // ── Footer ────────────────────────────────────────────────
+    l.set_fill_color(ink3());
+    l.use_text(
+        "Generated by zeitstempel.",
+        9.0,
+        Mm(margin),
+        Mm(18.0),
+        &serif_italic,
+    );
+
+    let mut writer = BufWriter::new(
+        std::fs::File::create(path).map_err(|e| format!("create file: {e}"))?,
+    );
+    doc.save(&mut writer).map_err(|e| format!("save pdf: {e}"))?;
+    Ok(())
+}
+
+fn truncate_filename(name: &str, max: usize) -> String {
+    if name.chars().count() <= max {
+        return name.to_string();
+    }
+    let head: String = name.chars().take(max - 3).collect();
+    format!("{head}…")
 }
