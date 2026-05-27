@@ -756,7 +756,9 @@ impl App {
                     background: Some(iced::Background::Color(COL_HAIRLINE)),
                     ..Default::default()
                 }),
-            pairs_list,
+            container(pairs_list)
+                .width(Length::Fill)
+                .height(Length::Fill),
             container(Space::new())
                 .width(Length::Fill)
                 .height(Length::Fixed(1.0))
@@ -768,6 +770,7 @@ impl App {
             bottom,
         ]
         .spacing(0)
+        .height(Length::Fill)
         .into()
     }
 }
