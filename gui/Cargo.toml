@@ -11,3 +11,5 @@ zeitstempel = { path = "../core" }
 iced = { version = "0.14", features = ["tokio", "advanced", "canvas"] }
 tokio = { version = "1", features = ["rt-multi-thread"] }
 webbrowser = "1.0"
+printpdf = "0.7"
+rfd = "0.15"

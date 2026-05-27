@@ -165,7 +165,21 @@ enum Message {
     CopyToClipboard(String),
     Reset,
     ExportPdf,
+    ExportPdfDone(Result<PathBuf, String>),
     WindowOpened(window::Id),
+}
+
+#[derive(Clone, Debug)]
+struct VerifiedPayload {
+    filename: String,
+    file_hash: String,
+    block: u64,
+    when: String,
+    block_hash: String,
+    merkle_root: String,
+    path_depth: usize,
+    confirmations: u64,
+    confirmations_exact: bool,
 }
 
 impl App {
@@ -196,7 +210,18 @@ impl App {
                 self.resize_to_state()
             }
             Message::ExportPdf => {
-                // Phase B will wire this. For now the button is silent.
+                let Some(payload) = self.verified_payload() else {
+                    return Task::none();
+                };
+                Task::perform(export_pdf_async(payload), Message::ExportPdfDone)
+            }
+            Message::ExportPdfDone(result) => {
+                if let Ok(path) = result {
+                    // Open the saved file in the system viewer so the
+                    // user can confirm the result immediately.
+                    let url = format!("file://{}", path.display());
+                    let _ = webbrowser::open(&url);
+                }
                 Task::none()
             }
             Message::WindowOpened(id) => {
@@ -204,6 +229,37 @@ impl App {
                 Task::none()
             }
         }
+    }
+
+    fn verified_payload(&self) -> Option<VerifiedPayload> {
+        let outcome = self.outcome.as_ref()?;
+        let Outcome::Verified {
+            block,
+            when,
+            block_hash,
+            merkle_root,
+            file_hash,
+            path_depth,
+            confirmations,
+            confirmations_exact,
+        } = outcome
+        else {
+            return None;
+        };
+        let filename = path_filename(self.file_path.as_deref())
+            .unwrap_or("file")
+            .to_string();
+        Some(VerifiedPayload {
+            filename,
+            file_hash: file_hash.clone(),
+            block: *block,
+            when: when.clone(),
+            block_hash: block_hash.clone(),
+            merkle_root: merkle_root.clone(),
+            path_depth: *path_depth,
+            confirmations: *confirmations,
+            confirmations_exact: *confirmations_exact,
+        })
     }
 
     fn on_file_dropped(&mut self, path: PathBuf) -> Task<Message> {
@@ -1095,4 +1151,277 @@ fn summarize(bundle: &VerifyBundle, tip_height: Option<u64>) -> Outcome {
         }
     }
     Outcome::Error { message: "proof contains no attestations".into() }
+}
+
+// ── PDF export ────────────────────────────────────────────────────
+//
+// Generates a one-page A4 verification certificate. Uses built-in
+// PDF fonts (Times/Helvetica/Courier) — they're embedded by every
+// reader by default, so the document is portable. The aesthetic
+// echoes the on-screen design (italic serif headline, labeled
+// sections, mono hashes) translated into print conventions.
+
+async fn export_pdf_async(payload: VerifiedPayload) -> Result<PathBuf, String> {
+    tokio::task::spawn_blocking(move || -> Result<PathBuf, String> {
+        let stem = std::path::Path::new(&payload.filename)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("verification")
+            .to_string();
+        let path = rfd::FileDialog::new()
+            .set_file_name(format!("{stem}-verification.pdf"))
+            .add_filter("PDF", &["pdf"])
+            .save_file()
+            .ok_or_else(|| "cancelled".to_string())?;
+        write_verified_pdf(&payload, &path)?;
+        Ok(path)
+    })
+    .await
+    .map_err(|e| format!("worker panicked: {e}"))?
+}
+
+fn write_verified_pdf(payload: &VerifiedPayload, path: &Path) -> Result<(), String> {
+    use printpdf::{BuiltinFont, Color, Mm, PdfDocument, Rgb};
+    use std::io::BufWriter;
+
+    let (doc, page, layer) = PdfDocument::new(
+        "OpenTimestamps Verification",
+        Mm(210.0),
+        Mm(297.0),
+        "Layer 1",
+    );
+    let l = doc.get_page(page).get_layer(layer);
+
+    let serif = doc
+        .add_builtin_font(BuiltinFont::TimesRoman)
+        .map_err(|e| format!("{e}"))?;
+    let serif_italic = doc
+        .add_builtin_font(BuiltinFont::TimesItalic)
+        .map_err(|e| format!("{e}"))?;
+    let serif_bold = doc
+        .add_builtin_font(BuiltinFont::TimesBold)
+        .map_err(|e| format!("{e}"))?;
+    let sans = doc
+        .add_builtin_font(BuiltinFont::Helvetica)
+        .map_err(|e| format!("{e}"))?;
+    let mono = doc
+        .add_builtin_font(BuiltinFont::Courier)
+        .map_err(|e| format!("{e}"))?;
+
+    let page_w = 210.0_f32;
+    let margin = 22.0_f32;
+    let content_w = page_w - 2.0 * margin;
+    // y is measured from the bottom of the page. We track a running
+    // cursor and decrement it as we lay rows down the page.
+    let mut y = 297.0_f32 - 26.0;
+
+    let ink = || Color::Rgb(Rgb::new(0.10, 0.09, 0.09, None));
+    let ink2 = || Color::Rgb(Rgb::new(0.36, 0.34, 0.32, None));
+    let ink3 = || Color::Rgb(Rgb::new(0.55, 0.53, 0.51, None));
+    let verified = || Color::Rgb(Rgb::new(0.165, 0.482, 0.278, None));
+    let hairline_col = || Color::Rgb(Rgb::new(0.81, 0.80, 0.77, None));
+
+    // ── Header ────────────────────────────────────────────────
+    l.set_fill_color(ink2());
+    l.use_text(
+        "zeitstempel — proof of existence",
+        11.0,
+        Mm(margin),
+        Mm(y),
+        &serif_italic,
+    );
+    y -= 6.0;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    l.set_fill_color(ink3());
+    l.use_text(
+        format!("Generated {}", format_unix_utc(now)),
+        9.0,
+        Mm(margin),
+        Mm(y),
+        &sans,
+    );
+    y -= 20.0;
+
+    // ── Verdict ──────────────────────────────────────────────
+    l.set_fill_color(verified());
+    l.use_text("VERIFIED.", 30.0, Mm(margin), Mm(y), &serif_bold);
+    y -= 12.0;
+    l.set_fill_color(ink());
+    l.use_text(
+        format!("Your file existed before {}.", payload.when),
+        13.0,
+        Mm(margin),
+        Mm(y),
+        &serif,
+    );
+    y -= 6.0;
+    l.set_fill_color(ink3());
+    l.use_text(
+        "Bitcoin block timestamps may drift up to ±2 hours from network time.",
+        9.5,
+        Mm(margin),
+        Mm(y),
+        &serif_italic,
+    );
+    y -= 12.0;
+
+    draw_hairline(&l, margin, page_w - margin, y, &hairline_col());
+    y -= 12.0;
+
+    // ── FILE section ─────────────────────────────────────────
+    l.set_fill_color(ink3());
+    l.use_text("THE FILE", 9.0, Mm(margin), Mm(y), &sans);
+    y -= 7.0;
+    l.set_fill_color(ink());
+    l.use_text(&payload.filename, 12.5, Mm(margin), Mm(y), &serif);
+    y -= 5.5;
+    l.set_fill_color(ink2());
+    write_field(&l, "SHA-256", &payload.file_hash, margin, y, &sans, &mono);
+    y -= 10.0;
+
+    // ── BLOCK section ────────────────────────────────────────
+    l.set_fill_color(ink3());
+    l.use_text("THE BITCOIN BLOCK", 9.0, Mm(margin), Mm(y), &sans);
+    y -= 9.0;
+    l.set_fill_color(ink());
+    l.use_text(format!("#{}", payload.block), 22.0, Mm(margin), Mm(y), &mono);
+    y -= 7.0;
+    l.set_fill_color(ink2());
+    l.use_text(
+        format!("mined {}", payload.when),
+        11.0,
+        Mm(margin),
+        Mm(y),
+        &serif_italic,
+    );
+    y -= 8.0;
+    write_field(&l, "merkle root", &payload.merkle_root, margin, y, &sans, &mono);
+    y -= 8.0;
+    write_field(&l, "block hash", &payload.block_hash, margin, y, &sans, &mono);
+    y -= 12.0;
+
+    // ── IMMUTABILITY ─────────────────────────────────────────
+    l.set_fill_color(ink3());
+    l.use_text("IMMUTABILITY", 9.0, Mm(margin), Mm(y), &sans);
+    y -= 7.0;
+    l.set_fill_color(ink());
+    let conf_label = if payload.confirmations_exact {
+        "blocks built on top since"
+    } else {
+        "blocks built on top since (est.)"
+    };
+    l.use_text(
+        format!("{} {}", thousands(payload.confirmations), conf_label),
+        12.0,
+        Mm(margin),
+        Mm(y),
+        &serif,
+    );
+    y -= 5.5;
+    l.set_fill_color(ink2());
+    l.use_text(
+        format!(
+            "≈ {} of accumulated mining work",
+            pretty_duration(payload.confirmations)
+        ),
+        10.0,
+        Mm(margin),
+        Mm(y),
+        &serif_italic,
+    );
+    y -= 12.0;
+
+    // ── PROOF SHAPE ──────────────────────────────────────────
+    l.set_fill_color(ink3());
+    l.use_text("PROOF SHAPE", 9.0, Mm(margin), Mm(y), &sans);
+    y -= 7.0;
+    l.set_fill_color(ink());
+    l.use_text(
+        format!(
+            "{} operations from file to merkle root",
+            payload.path_depth
+        ),
+        12.0,
+        Mm(margin),
+        Mm(y),
+        &serif,
+    );
+    y -= 5.5;
+    let bundle = 1u64.checked_shl(payload.path_depth as u32).unwrap_or(u64::MAX);
+    l.set_fill_color(ink2());
+    l.use_text(
+        format!(
+            "~{} files were bundled into the same merkle tree that day",
+            thousands(bundle)
+        ),
+        10.0,
+        Mm(margin),
+        Mm(y),
+        &serif_italic,
+    );
+
+    // ── Footer at bottom of page ─────────────────────────────
+    let footer_y = 18.0_f32;
+    l.set_fill_color(ink3());
+    l.use_text(
+        "Generated by zeitstempel.",
+        9.0,
+        Mm(margin),
+        Mm(footer_y + 5.0),
+        &serif_italic,
+    );
+    l.use_text(
+        format!(
+            "Independently verifiable at https://blockstream.info/block/{}",
+            payload.block_hash
+        ),
+        8.0,
+        Mm(margin),
+        Mm(footer_y),
+        &mono,
+    );
+
+    let _ = content_w; // reserved for future right-edge text positioning
+
+    let mut writer =
+        BufWriter::new(std::fs::File::create(path).map_err(|e| format!("create file: {e}"))?);
+    doc.save(&mut writer).map_err(|e| format!("save pdf: {e}"))?;
+    Ok(())
+}
+
+fn write_field(
+    layer: &printpdf::PdfLayerReference,
+    label: &str,
+    value: &str,
+    margin: f32,
+    y: f32,
+    sans: &printpdf::IndirectFontRef,
+    mono: &printpdf::IndirectFontRef,
+) {
+    use printpdf::Mm;
+    layer.use_text(label, 8.5, Mm(margin + 2.0), Mm(y), sans);
+    layer.use_text(value, 9.5, Mm(margin + 32.0), Mm(y), mono);
+}
+
+fn draw_hairline(
+    layer: &printpdf::PdfLayerReference,
+    x_from: f32,
+    x_to: f32,
+    y: f32,
+    color: &printpdf::Color,
+) {
+    use printpdf::{Line, Mm, Point};
+    layer.set_outline_color(color.clone());
+    layer.set_outline_thickness(0.3);
+    let line = Line {
+        points: vec![
+            (Point::new(Mm(x_from), Mm(y)), false),
+            (Point::new(Mm(x_to), Mm(y)), false),
+        ],
+        is_closed: false,
+    };
+    layer.add_line(line);
 }
