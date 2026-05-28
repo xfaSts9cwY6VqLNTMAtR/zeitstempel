@@ -52,7 +52,7 @@ const T_TAGLINE:  f32 = 20.0;
 const T_BODY:     f32 = 13.5;
 const T_META:     f32 = 11.5;
 const T_MONO:     f32 = 11.5;
-const T_FOOTNOTE: f32 = 11.0;
+const T_FOOTNOTE: f32 = 22.0;
 
 // ── Fonts ─────────────────────────────────────────────────────────
 //
@@ -527,8 +527,6 @@ impl App {
             Space::new().height(Length::Fixed(20.0)),
             drop_zones(self.file_path.as_deref(), self.ots_path.as_deref()),
             Space::new().height(Length::Fill),
-            footer_note(),
-            Space::new().height(Length::Fixed(6.0)),
             bulk_entry_link(),
         ]
         .spacing(0)
@@ -542,7 +540,6 @@ impl App {
             Space::new().height(Length::Fixed(8.0)),
             verifying_indicator(pulse_phase),
             Space::new().height(Length::Fill),
-            footer_note(),
         ]
         .spacing(0)
         .into()
@@ -609,9 +606,7 @@ impl App {
             Space::new().height(Length::Fixed(24.0)),
             actions,
 
-            Space::new().height(Length::Fixed(20.0)),
-            footer_note(),
-            Space::new().height(Length::Fixed(6.0)),
+            Space::new().height(Length::Fixed(14.0)),
             bulk_entry_link(),
         ]
         .spacing(0)
@@ -649,7 +644,6 @@ impl App {
             ].spacing(8).align_y(iced::Alignment::Center),
 
             Space::new().height(Length::Fill),
-            footer_note(),
         ]
         .spacing(0)
         .into()
@@ -670,7 +664,6 @@ impl App {
                 .spacing(8)
                 .align_y(iced::Alignment::Center),
             Space::new().height(Length::Fill),
-            footer_note(),
         ]
         .spacing(0)
         .into()
@@ -1199,28 +1192,6 @@ fn text_link<'a>(label: &'a str, msg: Message) -> Element<'a, Message> {
             ..Default::default()
         }
     })
-    .into()
-}
-
-fn footer_note<'a>() -> Element<'a, Message> {
-    container(
-        column![
-            text("Your file stays on this device.")
-                .size(10.5)
-                .color(COL_INK_3)
-                .font(dm_sans(Weight::Normal))
-                .align_x(iced::alignment::Horizontal::Center),
-            text("Only the block height crosses to blockstream.info.")
-                .size(10.5)
-                .color(COL_INK_3)
-                .font(dm_sans(Weight::Normal))
-                .align_x(iced::alignment::Horizontal::Center),
-        ]
-        .spacing(2)
-        .align_x(iced::Alignment::Center),
-    )
-    .width(Length::Fill)
-    .align_x(iced::alignment::Horizontal::Center)
     .into()
 }
 
