@@ -597,8 +597,13 @@ impl App {
             ]),
             Space::new().height(Length::Fixed(18.0)),
             section("Proof shape", column![
-                evidence_row("path depth", text_value(format!("{} operations from file to merkle root", path_depth))),
-                evidence_row("bundle", muted_value(format!("~{} files at the calendar that day", thousands(1u64.checked_shl(*path_depth as u32).unwrap_or(u64::MAX))))),
+                evidence_row(
+                    "operations",
+                    text_value(format!(
+                        "{} hash operations from file to Bitcoin's chain",
+                        path_depth
+                    )),
+                ),
             ]),
 
             Space::new().height(Length::Fixed(24.0)),
@@ -1095,8 +1100,14 @@ fn hash_value<'a>(hex: String) -> Element<'a, Message> {
         text(label)
             .size(T_MONO)
             .color(COL_INK)
-            .font(jetbrains()),
+            .font(jetbrains())
+            // 64-char hex has no word breaks; force wrapping at any
+            // glyph so the value fits the value-column's width and
+            // breaks across two lines.
+            .wrapping(iced::widget::text::Wrapping::Glyph)
+            .width(Length::Fill),
     )
+    .width(Length::Fill)
     .padding([1, 4])
     .on_press(Message::CopyToClipboard(hex))
     .style(|_, status| {
@@ -1862,26 +1873,13 @@ fn write_verified_pdf(payload: &VerifiedPayload, path: &Path) -> Result<(), Stri
     l.set_fill_color(ink());
     l.use_text(
         format!(
-            "{} operations from file to merkle root",
+            "{} hash operations from file to Bitcoin's chain",
             payload.path_depth
         ),
         12.0,
         Mm(margin),
         Mm(y),
         &serif,
-    );
-    y -= 5.5;
-    let bundle = 1u64.checked_shl(payload.path_depth as u32).unwrap_or(u64::MAX);
-    l.set_fill_color(ink2());
-    l.use_text(
-        format!(
-            "~{} files were bundled into the same merkle tree that day",
-            thousands(bundle)
-        ),
-        10.0,
-        Mm(margin),
-        Mm(y),
-        &serif_italic,
     );
 
     // ── Footer at bottom of page ─────────────────────────────
