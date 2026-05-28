@@ -997,7 +997,10 @@ fn verified_footer<'a>() -> Element<'a, Message> {
             .font(newsreader(Weight::Normal, true))
             .align_x(iced::alignment::Horizontal::Center),
         Space::new().height(Length::Fixed(6.0)),
-        footer_link("opentimestamps.org \u{2197}", "https://opentimestamps.org"),
+        footer_link(
+            "An independent reader of the OpenTimestamps protocol \u{2197}",
+            "https://opentimestamps.org",
+        ),
     ]
     .align_x(iced::Alignment::Center)
     .into()
