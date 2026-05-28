@@ -52,7 +52,7 @@ const T_TAGLINE:  f32 = 20.0;
 const T_BODY:     f32 = 13.5;
 const T_META:     f32 = 11.5;
 const T_MONO:     f32 = 11.5;
-const T_FOOTNOTE: f32 = 22.0;
+const T_FOOTNOTE: f32 = 15.4;
 
 // ── Fonts ─────────────────────────────────────────────────────────
 //
@@ -568,7 +568,7 @@ impl App {
         column![
             drop_zones_compact(self.file_path.as_deref(), self.ots_path.as_deref()),
             Space::new().height(Length::Fixed(20.0)),
-            verdict(false, "Verified.", &verified_conclusion(when), Some(verified_footnote())),
+            verdict(false, "Verified.", &verified_conclusion(when), Some(verified_footer())),
             Space::new().height(Length::Fixed(22.0)),
             divider(),
             Space::new().height(Length::Fixed(18.0)),
@@ -626,9 +626,7 @@ impl App {
                 true,
                 "Mismatch.",
                 "This .ots proof was made for a different file.",
-                Some(format!(
-                    "The proof itself is valid — it just doesn't belong to {file_name}."
-                )),
+                Some(mismatch_footer(file_name)),
             ),
             Space::new().height(Length::Fixed(22.0)),
             divider(),
@@ -941,13 +939,13 @@ fn verdict<'a>(
     failed: bool,
     headline: &'a str,
     conclusion: impl Into<String>,
-    footnote: Option<String>,
+    footer: Option<Element<'a, Message>>,
 ) -> Element<'a, Message> {
     verdict_color(
         headline,
         if failed { COL_FAILED } else { COL_VERIFIED },
         conclusion.into(),
-        footnote,
+        footer,
     )
 }
 
@@ -955,7 +953,7 @@ fn verdict_color<'a>(
     headline: &'a str,
     color: Color,
     conclusion: String,
-    footnote: Option<String>,
+    footer: Option<Element<'a, Message>>,
 ) -> Element<'a, Message> {
     let mut cols = column![
         text(headline.to_string())
@@ -970,19 +968,13 @@ fn verdict_color<'a>(
             .font(dm_sans(Weight::Normal))
             .align_x(iced::alignment::Horizontal::Center),
     ];
-    if let Some(fn_text) = footnote {
+    if let Some(foot) = footer {
         cols = cols
-            .push(Space::new().height(Length::Fixed(8.0)))
+            .push(Space::new().height(Length::Fixed(10.0)))
             .push(
-                container(
-                    text(fn_text)
-                        .size(T_FOOTNOTE)
-                        .color(COL_INK_3)
-                        .font(newsreader(Weight::Normal, true))
-                        .align_x(iced::alignment::Horizontal::Center),
-                )
-                .max_width(360.0)
-                .align_x(iced::alignment::Horizontal::Center),
+                container(foot)
+                    .max_width(380.0)
+                    .align_x(iced::alignment::Horizontal::Center),
             );
     }
     cols.width(Length::Fill)
@@ -994,8 +986,59 @@ fn verified_conclusion(when: &str) -> String {
     format!("Your file existed before {}.", when)
 }
 
-fn verified_footnote() -> String {
-    "Bitcoin block timestamps may drift up to ±2 hours from the network's actual time. The proof is otherwise mathematically exact.".to_string()
+/// The drift caption + a discreet link to the OpenTimestamps project
+/// page. The caption explains the only honest fuzz in the proof; the
+/// link gives a curious user somewhere to go.
+fn verified_footer<'a>() -> Element<'a, Message> {
+    column![
+        text("Bitcoin block timestamps may drift up to ±2 hours from the network's actual time.")
+            .size(T_FOOTNOTE)
+            .color(COL_INK_3)
+            .font(newsreader(Weight::Normal, true))
+            .align_x(iced::alignment::Horizontal::Center),
+        Space::new().height(Length::Fixed(6.0)),
+        footer_link("opentimestamps.org \u{2197}", "https://opentimestamps.org"),
+    ]
+    .align_x(iced::Alignment::Center)
+    .into()
+}
+
+/// Mismatch-state footer — just the explanatory sentence styled like
+/// the verified footnote, but without a link.
+fn mismatch_footer<'a>(file_name: &'a str) -> Element<'a, Message> {
+    text(format!(
+        "The proof itself is valid — it just doesn't belong to {file_name}."
+    ))
+    .size(T_FOOTNOTE)
+    .color(COL_INK_3)
+    .font(newsreader(Weight::Normal, true))
+    .align_x(iced::alignment::Horizontal::Center)
+    .into()
+}
+
+fn footer_link<'a>(label: &'a str, url: &'a str) -> Element<'a, Message> {
+    button(
+        text(label.to_string())
+            .size(T_FOOTNOTE - 2.0)
+            .color(COL_INK_2)
+            .font(newsreader(Weight::Normal, true)),
+    )
+    .padding([2, 6])
+    .on_press(Message::OpenUrl(url.to_string()))
+    .style(|_, status| {
+        use iced::widget::button;
+        let bg = match status {
+            button::Status::Hovered => COL_HOVER_BG,
+            _ => Color::TRANSPARENT,
+        };
+        button::Style {
+            background: Some(iced::Background::Color(bg)),
+            text_color: COL_INK_2,
+            border: Border { color: Color::TRANSPARENT, width: 0.0, radius: 3.0.into() },
+            ..Default::default()
+        }
+    })
+    .into()
 }
 
 fn divider<'a>() -> Element<'a, Message> {
