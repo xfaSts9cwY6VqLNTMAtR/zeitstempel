@@ -998,7 +998,7 @@ fn verified_footer<'a>() -> Element<'a, Message> {
             .align_x(iced::alignment::Horizontal::Center),
         Space::new().height(Length::Fixed(6.0)),
         footer_link(
-            "An independent reader of the OpenTimestamps protocol \u{2197}",
+            "zeitstempel is an independent reader of the OpenTimestamps protocol \u{2197}",
             "https://opentimestamps.org",
         ),
     ]
