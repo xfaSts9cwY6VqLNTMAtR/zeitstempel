@@ -3,7 +3,7 @@ name = "zeitstempel"
 version = "0.1.0"
 edition = "2024"
 description = "Standalone OpenTimestamps CLI — stamp, upgrade, and verify .ots proofs without the opentimestamps library"
-repository = "https://github.com/xfaSts9cwY6VqLNTMAtR/zeitstempel"
+repository = "https://github.com/fischer-jan/zeitstempel"
 license = "MIT"
 
 [dependencies]

@@ -141,7 +141,7 @@ src/
 
 ## See also
 
-**[zeitstempel-react](https://github.com/xfaSts9cwY6VqLNTMAtR/zeitstempel-react)** ([`zeitstempel` on npm](https://www.npmjs.com/package/zeitstempel)) -- a TypeScript port of the same core engine, usable as a library in browsers and Node.js. Includes optional React components for verification UI. Same stamp/upgrade/verify lifecycle, same `.ots` format, same calendar servers.
+**[zeitstempel-react](https://github.com/fischer-jan/zeitstempel-react)** ([`zeitstempel` on npm](https://www.npmjs.com/package/zeitstempel)) -- a TypeScript port of the same core engine, usable as a library in browsers and Node.js. Includes optional React components for verification UI. Same stamp/upgrade/verify lifecycle, same `.ots` format, same calendar servers.
 
 ## License
 

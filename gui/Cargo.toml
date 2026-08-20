@@ -3,7 +3,7 @@ name = "zeitstempel-gui"
 version = "0.1.0"
 edition = "2024"
 description = "Drop-target GUI verifier for OpenTimestamps proofs"
-repository = "https://github.com/xfaSts9cwY6VqLNTMAtR/zeitstempel"
+repository = "https://github.com/fischer-jan/zeitstempel"
 license = "MIT"
 
 [dependencies]
