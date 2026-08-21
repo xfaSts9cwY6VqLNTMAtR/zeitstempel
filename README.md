@@ -14,9 +14,11 @@ Written in Rust, compiles to a single portable binary. The binary `.ots` format 
 
 ## A note on privacy
 
-OpenTimestamps anchors a *hash* to the Bitcoin blockchain — not the data itself. The 32-byte digest is the only thing that ever needs to leave your machine.
+An OpenTimestamps proof is built from your file's *hash*, never from the file itself. The hash is a 32-byte digest that reveals nothing about the content, and it is the only thing that ever needs to leave your machine. zeitstempel sticks to that rule: it hashes locally, and what it submits is the digest blinded with a random nonce — so not even the calendar server can link the submission to your file.
 
-In my view this is a real issue with the standard implementation at [opentimestamps.org](https://opentimestamps.org/): the web tool asks you to hand over the file itself. Even if the page happens to hash client-side today, the design trains users to drop sensitive files into a "verification tool" — and a compromised page or a malicious mirror could exfiltrate them without the user noticing. For anything you wouldn't want a stranger to read, that's a hard no.
+The official web tool at [opentimestamps.org](https://opentimestamps.org/) works differently: it asks you to drop the file itself into a browser page. Today that page computes the hash in your browser and uploads nothing — but you can't see that from the outside, and you wouldn't notice if it changed. A compromised page, or a convincing look-alike mirror, could quietly upload every file it receives. Just as bad, the workflow teaches people that handing a document to a website is a normal part of timestamping. It isn't — the protocol never needs the file.
+
+So for anything you wouldn't show a stranger: hash locally, share only the digest.
 
 ## Usage
 
@@ -83,7 +85,8 @@ File hash: 03ba204e50d126e4674c005e04d82e84c21366780af1f43bd54a37816b6ab340 (SHA
 
 ```bash
 cargo build --release
-# Binary at: target/release/zeitstempel
+# CLI binary at: target/release/zeitstempel
+# GUI binary at: target/release/zeitstempel-gui
 ```
 
 ## Test
@@ -101,9 +104,12 @@ Tests include:
 
 ## Architecture
 
+The repo is a Cargo workspace with two crates: `core` (the library and CLI) and `gui` (a small optional desktop verifier).
+
 ```
-src/
+core/src/
   main.rs        CLI entry point, subcommand routing, output formatting
+  lib.rs         Library root (also consumed by the gui crate)
   parser.rs      Binary .ots format parser (magic, LEB128, tree walking, ASCII art)
   writer.rs      Binary .ots format serializer (inverse of parser)
   operations.rs  Hash/append/prepend operation executors
@@ -111,6 +117,8 @@ src/
   upgrade.rs     Upgrade logic (fetch completed proofs, replace pending)
   verify.rs      Verification logic (replay ops, check against blockchain)
   bitcoin.rs     Blockstream.info API client (mempool.space fallback)
+gui/src/
+  main.rs        Drop-target verifier (iced): drop a file and its .ots, get the result
 ```
 
 ### What we wrote from scratch (the educational core)
@@ -126,6 +134,8 @@ src/
 - `sha2`, `sha1`, `ripemd` — Cryptographic hash functions
 - `ureq` — Minimal HTTP client (Rust has no stdlib HTTP)
 - `serde_json` — JSON parsing for Bitcoin API responses
+- `getrandom` — Cryptographic RNG for the stamp nonce
+- `iced` + `tokio` — GUI toolkit and async runtime (gui crate only)
 
 ## Supported Features
 
