@@ -63,7 +63,15 @@ pub fn stamp_file(file_data: &[u8]) -> Result<Vec<u8>, StampError> {
 
     for server in CALENDAR_SERVERS {
         match submit_to_calendar(server, &calendar_digest) {
-            Ok(response) => responses.push((server, response)),
+            // Only embed responses that parse as a valid timestamp
+            // tree — a broken or malicious calendar response would
+            // otherwise produce a corrupt .ots while stamp reports
+            // success. Parsing also runs the calendar-URI validation
+            // on any pending attestations the server returned.
+            Ok(response) => match parser::parse_timestamp_from_bytes(&response) {
+                Ok(_) => responses.push((server, response)),
+                Err(e) => errors.push(format!("{}: invalid calendar response: {}", server, e)),
+            },
             Err(e) => errors.push(format!("{}: {}", server, e)),
         }
     }

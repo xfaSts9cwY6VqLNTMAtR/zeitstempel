@@ -128,6 +128,51 @@ fn check_attestation(att: &Attestation, msg: &[u8]) -> VerifyResult {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::{HashOp, Operation, OtsFile, Timestamp};
+    use crate::writer;
+
+    #[test]
+    fn test_hexlify_bomb_errors_instead_of_oom() {
+        // 60 chained Hexlify ops double the message 60 times — without
+        // the message-size cap this tries to allocate exabytes. The
+        // leaf is a Pending attestation, so no network is touched.
+        fn nest(depth: usize) -> Timestamp {
+            if depth == 0 {
+                Timestamp {
+                    attestations: vec![Attestation::Pending {
+                        uri: "https://alice.btc.calendar.opentimestamps.org".into(),
+                    }],
+                    ops: vec![],
+                }
+            } else {
+                Timestamp {
+                    attestations: vec![],
+                    ops: vec![(Operation::Hexlify, nest(depth - 1))],
+                }
+            }
+        }
+
+        let file_data = b"hexlify bomb test";
+        let digest = operations::hash_file_contents(file_data, HashOp::Sha256).unwrap();
+        let ots = OtsFile {
+            hash_op: HashOp::Sha256,
+            file_digest: digest,
+            timestamp: nest(60),
+        };
+        let ots_bytes = writer::write_ots(&ots);
+
+        let results = verify_file(file_data, &ots_bytes).expect("parse should succeed");
+        assert_eq!(results.len(), 1);
+        assert!(
+            matches!(&results[0], VerifyResult::Error { message } if message.contains("refusing to continue")),
+            "expected a message-size error result",
+        );
+    }
+}
+
 /// Verify a Bitcoin attestation by checking the merkle root.
 fn verify_bitcoin(height: u64, msg: &[u8]) -> VerifyResult {
     // Fetch block info from the API

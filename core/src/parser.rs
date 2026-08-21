@@ -191,8 +191,12 @@ impl<'a> Parser<'a> {
             let byte = self.read_byte()?;
             let payload = (byte & 0x7F) as u64;
 
-            // Overflow guard: 9 bytes × 7 bits = 63 bits max
-            if shift >= 63 && payload > 1 {
+            // Overflow guard: a u64 holds 64 bits, so the 10th byte
+            // (shift 63) may only contribute its lowest bit, and no
+            // byte may follow it. Checking `shift >= 64` before the
+            // shift matters: `payload << 64` would panic in debug
+            // builds and silently wrap in release builds.
+            if shift >= 64 || (shift == 63 && payload > 1) {
                 return Err(ParseError::InvalidData("varuint overflow"));
             }
 
@@ -595,6 +599,31 @@ mod tests {
         // 300 = 0b100101100 → [0xAC, 0x02]
         let mut p = Parser::new(&[0xAC, 0x02]);
         assert_eq!(p.read_varuint().unwrap(), 300);
+    }
+
+    #[test]
+    fn test_varuint_max_u64_roundtrips() {
+        // u64::MAX = 9 bytes of 0xFF (63 bits) + final 0x01 (bit 63)
+        let mut buf = Vec::new();
+        crate::writer::write_varuint(&mut buf, u64::MAX);
+        let mut p = Parser::new(&buf);
+        assert_eq!(p.read_varuint().unwrap(), u64::MAX);
+    }
+
+    #[test]
+    fn test_varuint_rejects_overflow() {
+        // 10th byte contributing more than bit 63 → overflow
+        let mut too_big = vec![0xFF; 9];
+        too_big.push(0x02);
+        let mut p = Parser::new(&too_big);
+        assert!(p.read_varuint().is_err());
+
+        // Padded with continuation bytes past the 10th byte: must be
+        // rejected, not panic (debug) or silently wrap (release).
+        let mut padded = vec![0x80; 12];
+        padded.push(0x01);
+        let mut p = Parser::new(&padded);
+        assert!(p.read_varuint().is_err());
     }
 
     #[test]

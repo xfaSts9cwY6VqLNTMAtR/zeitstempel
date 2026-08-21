@@ -179,14 +179,17 @@ fn test_stamp_then_verify_digest_matches() {
     let (code, _, stderr) = run_zeitstempel(&["stamp", input.to_str().unwrap()]);
     assert_eq!(code, 0, "stamp should succeed. stderr: {}", stderr);
 
-    // Verify should succeed (pending, but digest matches)
+    // Digest matches but the proof is pending — exit 2 means "not
+    // verified yet", distinct from both success (0) and failure (1),
+    // so scripts can't mistake a pending proof for a verified one.
     let (code, stdout, stderr) = run_zeitstempel(&[
         "verify",
         input.to_str().unwrap(),
         ots.to_str().unwrap(),
     ]);
-    assert_eq!(code, 0, "verify should succeed (exit 0 for pending). stderr: {}", stderr);
+    assert_eq!(code, 2, "pending-only verify should exit 2. stderr: {}", stderr);
     assert!(stdout.contains("Pending"), "should show Pending status");
+    assert!(stdout.contains("Not verified"), "should state it is not verified");
 
     // Clean up
     std::fs::remove_file(&input).ok();

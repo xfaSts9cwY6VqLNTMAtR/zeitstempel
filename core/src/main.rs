@@ -59,6 +59,11 @@ fn print_usage() {
     println!("  zeitstempel verify content-hash.txt proof.ots");
     println!("  zeitstempel info proof.ots");
     println!();
+    println!("EXIT CODES (verify):");
+    println!("  0  verified against a Bitcoin block");
+    println!("  1  verification failed, or an error occurred");
+    println!("  2  not verified — proof is pending, skipped, or the block API was unreachable");
+    println!();
     println!("Creates and verifies .ots proofs by parsing the binary format from");
     println!("scratch, replaying hash operations, and checking against Bitcoin block");
     println!("headers via the Blockstream.info API (with mempool.space fallback).");
@@ -184,8 +189,11 @@ fn run_verify(file_path: &str, ots_path: &str) {
     if any_failed {
         process::exit(1);
     } else if !any_verified {
-        // No failures but also no successful Bitcoin verifications
-        process::exit(0);
+        // Nothing failed, but nothing was anchored to Bitcoin either
+        // (pending, skipped, or an unreachable API). Exit 2 so scripts
+        // can't mistake "not yet verified" for a successful verification.
+        println!("Not verified — no Bitcoin-anchored attestation could be confirmed.");
+        process::exit(2);
     }
 }
 

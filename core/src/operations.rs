@@ -10,15 +10,26 @@ use ripemd::Ripemd160;
 
 use crate::parser::{Operation, HashOp};
 
+/// Maximum message length (bytes) during proof replay.
+///
+/// Real proof messages stay under a few KB, and the parser already
+/// caps individual append/prepend payloads at 1MB. The cap exists
+/// because Hexlify doubles the message each application — without it,
+/// a crafted proof of ~60 chained Hexlify bytes drives the walker
+/// into allocation failure.
+pub const MAX_MSG_LEN: usize = 4 * 1024 * 1024;
+
 /// Apply a single operation to a message, returning the new message.
 pub fn apply(op: &Operation, msg: &[u8]) -> Result<Vec<u8>, OpError> {
     match op {
         Operation::Append(data) => {
+            check_msg_len(msg.len() + data.len())?;
             let mut out = msg.to_vec();
             out.extend_from_slice(data);
             Ok(out)
         }
         Operation::Prepend(data) => {
+            check_msg_len(msg.len() + data.len())?;
             let mut out = data.clone();
             out.extend_from_slice(msg);
             Ok(out)
@@ -33,9 +44,18 @@ pub fn apply(op: &Operation, msg: &[u8]) -> Result<Vec<u8>, OpError> {
             Ok(out)
         }
         Operation::Hexlify => {
+            check_msg_len(msg.len() * 2)?;
             let hex_str = crate::parser::hex(msg);
             Ok(hex_str.into_bytes())
         }
+    }
+}
+
+fn check_msg_len(len: usize) -> Result<(), OpError> {
+    if len > MAX_MSG_LEN {
+        Err(OpError::MessageTooLarge(len))
+    } else {
+        Ok(())
     }
 }
 
@@ -52,6 +72,7 @@ pub fn hash_file_contents(data: &[u8], hash_op: HashOp) -> Result<Vec<u8>, OpErr
 #[derive(Debug)]
 pub enum OpError {
     UnsupportedOp(&'static str),
+    MessageTooLarge(usize),
 }
 
 impl std::fmt::Display for OpError {
@@ -59,6 +80,9 @@ impl std::fmt::Display for OpError {
         match self {
             OpError::UnsupportedOp(name) => {
                 write!(f, "{} is not yet supported — add the sha3 crate if needed", name)
+            }
+            OpError::MessageTooLarge(len) => {
+                write!(f, "proof message would grow to {} bytes (limit {}); refusing to continue", len, MAX_MSG_LEN)
             }
         }
     }
@@ -122,6 +146,22 @@ mod tests {
         let result = apply(&Operation::Hexlify, &[0xab, 0xcd]).unwrap();
         // Should produce the ASCII bytes for "abcd"
         assert_eq!(result, b"abcd".to_vec());
+    }
+
+    #[test]
+    fn test_hexlify_rejects_oversized_message() {
+        // Hexlify doubles the message; past the cap it must error,
+        // not allocate.
+        let big = vec![0u8; MAX_MSG_LEN / 2 + 1];
+        let result = apply(&Operation::Hexlify, &big);
+        assert!(matches!(result, Err(OpError::MessageTooLarge(_))));
+    }
+
+    #[test]
+    fn test_append_rejects_oversized_message() {
+        let big = vec![0u8; MAX_MSG_LEN];
+        let result = apply(&Operation::Append(vec![0u8; 1]), &big);
+        assert!(matches!(result, Err(OpError::MessageTooLarge(_))));
     }
 
     #[test]
